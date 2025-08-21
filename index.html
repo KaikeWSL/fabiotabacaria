@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fabio tabacaria</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+</head>
+<body>
+    <!-- Tela de Loading -->
+    <div id="loading-screen" class="loading-screen active">
+        <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <h2>Fabio tabacaria</h2>
+            <p id="loading-text">Carregando...</p>
+        </div>
+    </div>
+
+    <!-- Tela de Login -->
+    <div id="login-screen" class="login-screen">
+        <div class="login-container">
+            <div class="login-header">
+                <h1>Fabio tabacaria</h1>
+                <p>Acesso Mobile</p>
+            </div>
+            <form id="login-form" class="login-form">
+                <div class="input-group">
+                    <label for="senha">Senha:</label>
+                    <input type="password" id="senha" name="senha" required autocomplete="current-password">
+                </div>
+                <button type="submit" class="btn btn-primary">
+                    <span class="btn-text">Entrar</span>
+                    <div class="btn-loading" style="display: none;">
+                        <div class="spinner-small"></div>
+                    </div>
+                </button>
+            </form>
+            <div id="login-error" class="error-message" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- App Principal -->
+    <div id="app" class="app" style="display: none;">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1 class="header-title">Fabio tabacaria</h1>
+                <button id="logout-btn" class="btn-logout">
+                    <span>🚪</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Navigation -->
+        <nav class="nav-tabs">
+            <button class="nav-tab active" data-tab="dashboard">
+                <span class="nav-icon">📊</span>
+                <span class="nav-text">Dashboard</span>
+            </button>
+            <button class="nav-tab" data-tab="vendas">
+                <span class="nav-icon">🛒</span>
+                <span class="nav-text">Vendas</span>
+            </button>
+            <button class="nav-tab" data-tab="produtos">
+                <span class="nav-icon">📦</span>
+                <span class="nav-text">Produtos</span>
+            </button>
+            <button class="nav-tab" data-tab="clientes">
+                <span class="nav-icon">👥</span>
+                <span class="nav-text">Clientes</span>
+            </button>
+            <button class="nav-tab" data-tab="fiados">
+                <span class="nav-icon">💳</span>
+                <span class="nav-text">Fiados</span>
+            </button>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Dashboard Tab -->
+            <div id="dashboard-tab" class="tab-content active">
+                <div class="dashboard-cards">
+                    <div class="card">
+                        <div class="card-icon">💰</div>
+                        <div class="card-content">
+                            <h3>Vendas Hoje</h3>
+                            <p id="vendas-hoje" class="card-value">R$ 0,00</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-icon">📅</div>
+                        <div class="card-content">
+                            <h3>Vendas do Mês</h3>
+                            <p id="vendas-mes" class="card-value">R$ 0,00</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-icon">💳</div>
+                        <div class="card-content">
+                            <h3>Total Fiado</h3>
+                            <p id="total-fiado" class="card-value">R$ 0,00</p>
+                        </div>
+                    </div>
+                    <div class="card">
+                        <div class="card-icon">⚠️</div>
+                        <div class="card-content">
+                            <h3>Estoque Baixo</h3>
+                            <p id="estoque-baixo" class="card-value">0 itens</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Vendas Tab -->
+            <div id="vendas-tab" class="tab-content">
+                <div class="tab-header">
+                    <h2>Nova Venda</h2>
+                    <button id="refresh-vendas" class="btn-refresh">🔄</button>
+                </div>
+                
+                <form id="venda-form" class="form">
+                    <div class="form-group">
+                        <label for="cliente-select">Cliente:</label>
+                        <select id="cliente-select" required>
+                            <option value="">Selecione um cliente</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="produto-select">Produto:</label>
+                        <select id="produto-select" required>
+                            <option value="">Selecione um produto</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="quantidade">Quantidade:</label>
+                            <div class="number-input">
+                                <button type="button" class="btn-number" id="qty-minus">-</button>
+                                <input type="number" id="quantidade" min="1" value="1" readonly>
+                                <button type="button" class="btn-number" id="qty-plus">+</button>
+                            </div>
+                        </div>
+                        <div class="form-group">
+                            <label for="preco-unitario">Preço Unitário:</label>
+                            <div class="number-input">
+                                <button type="button" class="btn-number" id="price-minus">-</button>
+                                <input type="number" id="preco-unitario" step="0.01" placeholder="0,00" readonly>
+                                <button type="button" class="btn-number" id="price-plus">+</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="preco-total">Total do Item (editável):</label>
+                        <div class="input-with-button">
+                            <div class="number-input">
+                                <button type="button" class="btn-number" id="total-minus">-</button>
+                                <input type="number" id="preco-total" step="0.01" placeholder="0,00" readonly>
+                                <button type="button" class="btn-number" id="total-plus">+</button>
+                            </div>
+                            <button type="button" id="reset-calc" class="btn-reset-calc" title="Voltar ao cálculo automático">🔄</button>
+                            <button type="button" id="edit-total" class="btn-edit-total" title="Editar manualmente">✏️</button>
+                        </div>
+                        <div class="discount-buttons">
+                            <button type="button" class="btn-discount" data-discount="5">-5%</button>
+                            <button type="button" class="btn-discount" data-discount="10">-10%</button>
+                            <button type="button" class="btn-discount" data-discount="15">-15%</button>
+                            <button type="button" class="btn-discount" data-discount="20">-20%</button>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>
+                            <input type="checkbox" id="is-fiado"> Venda fiado
+                        </label>
+                    </div>
+                    
+                    <button type="button" id="adicionar-item" class="btn btn-secondary">Adicionar Item</button>
+                </form>
+                
+                <div id="carrinho" class="carrinho" style="display: none;">
+                    <h3>Carrinho</h3>
+                    <div id="itens-carrinho"></div>
+                    <div class="carrinho-total">
+                        <strong>Total: R$ <span id="total-carrinho">0,00</span></strong>
+                    </div>
+                    <div class="carrinho-actions">
+                        <button id="limpar-carrinho" class="btn btn-outline">Limpar</button>
+                        <button id="finalizar-venda" class="btn btn-primary">Finalizar Venda</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Produtos Tab -->
+            <div id="produtos-tab" class="tab-content">
+                <div class="tab-header">
+                    <h2>Produtos</h2>
+                    <button id="refresh-produtos" class="btn-refresh">🔄</button>
+                </div>
+                
+                <form id="produto-form" class="form">
+                    <div class="form-group">
+                        <label for="produto-nome">Nome:</label>
+                        <input type="text" id="produto-nome" required>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="produto-custo">Custo:</label>
+                            <input type="number" id="produto-custo" step="0.01" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="produto-venda">Venda:</label>
+                            <input type="number" id="produto-venda" step="0.01" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="produto-fiado">Fiado:</label>
+                            <input type="number" id="produto-fiado" step="0.01" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="produto-estoque">Estoque:</label>
+                            <input type="number" id="produto-estoque" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="produto-minimo">Estoque Mínimo:</label>
+                        <input type="number" id="produto-minimo" value="5" required>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary">Salvar Produto</button>
+                </form>
+                
+                <div id="produtos-lista" class="lista">
+                    <div class="lista-loading">Carregando produtos...</div>
+                </div>
+            </div>
+
+            <!-- Clientes Tab -->
+            <div id="clientes-tab" class="tab-content">
+                <div class="tab-header">
+                    <h2>Clientes</h2>
+                    <button id="refresh-clientes" class="btn-refresh">🔄</button>
+                </div>
+                
+                <form id="cliente-form" class="form">
+                    <div class="form-group">
+                        <label for="cliente-nome">Nome:</label>
+                        <input type="text" id="cliente-nome" required>
+                    </div>
+                    
+                    <button type="submit" class="btn btn-primary">Salvar Cliente</button>
+                </form>
+                
+                <div id="clientes-lista" class="lista">
+                    <div class="lista-loading">Carregando clientes...</div>
+                </div>
+            </div>
+
+            <!-- Fiados Tab -->
+            <div id="fiados-tab" class="tab-content">
+                <div class="tab-header">
+                    <h2>Vendas Fiado</h2>
+                    <button id="refresh-fiados" class="btn-refresh">🔄</button>
+                </div>
+                
+                <div id="fiados-lista" class="lista">
+                    <div class="lista-loading">Carregando fiados...</div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Modal para Editar Produto -->
+    <div id="edit-produto-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Editar Produto</h3>
+                <button class="modal-close" onclick="window.app.closeEditProductModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="edit-produto-form" class="form">
+                    <input type="hidden" id="edit-produto-id">
+                    
+                    <div class="form-group">
+                        <label for="edit-produto-nome">Nome:</label>
+                        <input type="text" id="edit-produto-nome" required>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="edit-produto-custo">Custo:</label>
+                            <input type="number" id="edit-produto-custo" step="0.01" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-produto-venda">Venda:</label>
+                            <input type="number" id="edit-produto-venda" step="0.01" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label for="edit-produto-fiado">Fiado:</label>
+                            <input type="number" id="edit-produto-fiado" step="0.01" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="edit-produto-estoque">Estoque:</label>
+                            <input type="number" id="edit-produto-estoque" required>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="edit-produto-minimo">Estoque Mínimo:</label>
+                        <input type="number" id="edit-produto-minimo" required>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="window.app.closeEditProductModal()">Cancelar</button>
+                <button class="btn btn-primary" onclick="window.app.updateProduct()">Salvar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal para Editar Cliente -->
+    <div id="edit-cliente-modal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Editar Cliente</h3>
+                <button class="modal-close" onclick="window.app.closeEditClientModal()">&times;</button>
+            </div>
+            <div class="modal-body">
+                <form id="edit-cliente-form" class="form">
+                    <input type="hidden" id="edit-cliente-id">
+                    
+                    <div class="form-group">
+                        <label for="edit-cliente-nome">Nome:</label>
+                        <input type="text" id="edit-cliente-nome" required>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline" onclick="window.app.closeEditClientModal()">Cancelar</button>
+                <button class="btn btn-primary" onclick="window.app.updateClient()">Salvar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/api.js?v=production"></script>
+    <script src="js/utils.js?v=production"></script>
+    <script src="js/components.js?v=production"></script>
+    <script src="js/app.js?v=production"></script>
+</body>
+</html>
