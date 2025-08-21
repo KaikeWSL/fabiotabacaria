@@ -3,6 +3,7 @@ services:
     name: sistema-vendas-api
     env: node
     plan: free
+    rootDir: backend-js
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /api/dashboard
@@ -10,6 +11,4 @@ services:
       - key: NODE_ENV
         value: production
       - key: DATABASE_URL
-        fromDatabase:
-          name: neon-db
-          property: connectionString
+        value: postgresql://neondb_owner:npg_AVFCR6hYz2Bb@ep-square-base-achvt3fs-pooler.sa-east-1.aws.neon.tech:5432/neondb?sslmode=require

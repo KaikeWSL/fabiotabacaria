@@ -9,13 +9,13 @@
 ### 2. Configurar no Render
 1. Acesse https://render.com/
 2. Clique em "New +" → "Web Service"
-3. Conecte seu repositório GitHub
+3. Conecte seu repositório GitHub: `https://github.com/KaikeWSL/fabiotabacaria`
 4. Configure:
    - **Name**: sistema-vendas-api
    - **Environment**: Node
+   - **Root Directory**: `backend-js`
    - **Build Command**: `npm install`
    - **Start Command**: `npm start`
-   - **Root Directory**: `backend-js`
 
 ### 3. Variáveis de ambiente
 Adicione no Render Dashboard → Settings → Environment:
