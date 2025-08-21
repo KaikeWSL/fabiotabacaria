@@ -145,7 +145,16 @@ app.get('/api/produtos/:id', async (req, res) => {
 
 app.post('/api/produtos', async (req, res) => {
     try {
+        console.log('📦 Recebendo criação de produto:', req.body);
+        
         const { nome, preco_custo, preco_venda, preco_fiado, quantidade_estoque, estoque_minimo } = req.body;
+
+        // Validação básica
+        if (!nome || nome.trim().length === 0) {
+            return res.status(400).json({ error: 'Nome do produto é obrigatório' });
+        }
+
+        console.log('✅ Dados validados, inserindo produto...');
 
         const result = await db.query(`
             INSERT INTO produtos (nome, preco_custo, preco_venda, preco_fiado, quantidade_estoque, estoque_minimo)
@@ -153,13 +162,15 @@ app.post('/api/produtos', async (req, res) => {
             RETURNING id
         `, [nome, preco_custo, preco_venda, preco_fiado, quantidade_estoque, estoque_minimo]);
 
+        console.log('✅ Produto criado com ID:', result.rows[0].id);
+
         res.json({
             id: result.rows[0].id,
             message: 'Produto criado com sucesso'
         });
     } catch (error) {
-        console.error('Erro ao criar produto:', error);
-        res.status(500).json({ error: 'Erro ao criar produto' });
+        console.error('❌ Erro detalhado ao criar produto:', error);
+        res.status(500).json({ error: `Erro ao criar produto: ${error.message}` });
     }
 });
 
@@ -215,7 +226,16 @@ app.get('/api/clientes/:id', async (req, res) => {
 
 app.post('/api/clientes', async (req, res) => {
     try {
+        console.log('👤 Recebendo criação de cliente:', req.body);
+        
         const { nome } = req.body;
+
+        // Validação básica
+        if (!nome || nome.trim().length === 0) {
+            return res.status(400).json({ error: 'Nome do cliente é obrigatório' });
+        }
+
+        console.log('✅ Dados validados, inserindo cliente...');
 
         const result = await db.query(`
             INSERT INTO clientes (nome)
@@ -223,13 +243,15 @@ app.post('/api/clientes', async (req, res) => {
             RETURNING id
         `, [nome]);
 
+        console.log('✅ Cliente criado com ID:', result.rows[0].id);
+
         res.json({
             id: result.rows[0].id,
             message: 'Cliente criado com sucesso'
         });
     } catch (error) {
-        console.error('Erro ao criar cliente:', error);
-        res.status(500).json({ error: 'Erro ao criar cliente' });
+        console.error('❌ Erro detalhado ao criar cliente:', error);
+        res.status(500).json({ error: `Erro ao criar cliente: ${error.message}` });
     }
 });
 
