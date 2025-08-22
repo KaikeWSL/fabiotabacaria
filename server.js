@@ -399,7 +399,7 @@ app.get('/api/fiados', async (req, res) => {
                     v.pago,
                     c.id as cliente_id,
                     c.nome as cliente_nome,
-                    COALESCE(v.descricao, 'Venda fiado') as descricao
+                    'Venda fiado' as descricao
                 FROM vendas v
                 JOIN clientes c ON v.cliente_id = c.id
                 WHERE v.is_fiado = true 
@@ -420,7 +420,7 @@ app.get('/api/fiados', async (req, res) => {
                     v.pago,
                     c.id as cliente_id,
                     c.nome as cliente_nome,
-                    COALESCE(v.descricao, 'Venda fiado') as descricao
+                    'Venda fiado' as descricao
                 FROM vendas v
                 JOIN clientes c ON v.cliente_id = c.id
                 WHERE v.is_fiado = true AND v.pago = false
