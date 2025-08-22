@@ -422,17 +422,26 @@ app.get('/api/fiados', async (req, res) => {
             `);
         }
 
-        const fiados = result.rows.map(fiado => ({
-            cliente_id: fiado.cliente_id,
-            cliente_nome: fiado.cliente_nome,
-            valor_total: parseFloat(fiado.valor_total),
-            total_vendas: parseInt(fiado.total_vendas),
-            ultima_venda: fiado.ultima_venda ? fiado.ultima_venda.toISOString() : null,
-            descricao: `${fiado.total_vendas} venda(s) em aberto`
-        }));
+        // ✅ CORREÇÃO: Melhorar mapeamento e validação dos dados
+        const fiados = result.rows.map(fiado => {
+            // Debug dos dados brutos do banco
+            console.log('🐛 DEBUG - Dados brutos do banco:', fiado);
+            
+            const fiadoProcessado = {
+                cliente_id: fiado.cliente_id,
+                cliente_nome: fiado.cliente_nome,
+                valor_total: parseFloat(fiado.valor_total) || 0, // ✅ Garantir number válido
+                total_vendas: parseInt(fiado.total_vendas) || 0,
+                ultima_venda: fiado.ultima_venda ? fiado.ultima_venda.toISOString() : null, // ✅ Garantir string ISO
+                descricao: `${fiado.total_vendas || 0} venda(s) em aberto`
+            };
+            
+            console.log('🐛 DEBUG - Dados processados:', fiadoProcessado);
+            return fiadoProcessado;
+        });
 
         console.log(`📋 Encontrados ${fiados.length} clientes com fiado em aberto`);
-        console.log('📋 Dados dos fiados:', fiados); // Debug
+        console.log('� Dados dos fiados sendo enviados:', JSON.stringify(fiados, null, 2)); // ✅ Debug completo
         res.json(fiados);
     } catch (error) {
         console.error('Erro ao listar fiados:', error);
