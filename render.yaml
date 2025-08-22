@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: sistema-vendas-api
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/dashboard
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        value: postgresql://neondb_owner:npg_AVFCR6hYz2Bb@ep-square-base-achvt3fs-pooler.sa-east-1.aws.neon.tech:5432/neondb?sslmode=require
