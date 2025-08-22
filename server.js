@@ -24,6 +24,42 @@ app.use(express.static(path.join(__dirname, '../frontend')));
 // Conectar ao banco na inicialização
 await db.connect();
 
+// Inicializar estrutura do banco
+async function initializeDatabase() {
+    try {
+        // Verificar se a coluna valor_pago existe
+        const checkColumn = await db.query(`
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name = 'vendas' AND column_name = 'valor_pago'
+        `);
+
+        if (checkColumn.rows.length === 0) {
+            console.log('🔧 Adicionando coluna valor_pago...');
+            await db.query(`
+                ALTER TABLE vendas 
+                ADD COLUMN valor_pago DECIMAL(10,2) DEFAULT 0
+            `);
+        }
+
+        // Criar tabela de pagamentos se não existir
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS pagamentos (
+                id SERIAL PRIMARY KEY,
+                venda_id INTEGER REFERENCES vendas(id),
+                valor DECIMAL(10,2) NOT NULL,
+                data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        console.log('✅ Banco de dados inicializado');
+    } catch (error) {
+        console.error('❌ Erro ao inicializar banco:', error);
+    }
+}
+
+await initializeDatabase();
+
 // Routes
 
 // Authentication
@@ -327,18 +363,28 @@ app.post('/api/vendas', async (req, res) => {
 app.get('/api/fiados', async (req, res) => {
     try {
         const result = await db.query(`
-            SELECT c.id, c.nome, COALESCE(SUM(v.total), 0) as total_devido
-            FROM clientes c
-            LEFT JOIN vendas v ON c.id = v.cliente_id 
-            WHERE v.is_fiado = true AND v.pago = false
-            GROUP BY c.id, c.nome
-            HAVING SUM(v.total) > 0
-            ORDER BY total_devido DESC
+            SELECT 
+                v.id,
+                v.total,
+                COALESCE(v.valor_pago, 0) as valor_pago,
+                (v.total - COALESCE(v.valor_pago, 0)) as valor_restante,
+                v.data_venda,
+                v.pago,
+                c.id as cliente_id,
+                c.nome as cliente_nome,
+                v.descricao
+            FROM vendas v
+            JOIN clientes c ON v.cliente_id = c.id
+            WHERE v.is_fiado = true 
+            AND (v.total - COALESCE(v.valor_pago, 0)) > 0
+            ORDER BY v.data_venda DESC
         `);
 
         const fiados = result.rows.map(fiado => ({
             ...fiado,
-            total_devido: parseFloat(fiado.total_devido)
+            total: parseFloat(fiado.total),
+            valor_pago: parseFloat(fiado.valor_pago),
+            valor_restante: parseFloat(fiado.valor_restante)
         }));
 
         res.json(fiados);
@@ -397,23 +443,71 @@ app.get('/api/fiados/cliente/:id', async (req, res) => {
 app.post('/api/fiados/pay/:vendaId', async (req, res) => {
     try {
         const { vendaId } = req.params;
+        const { valor_pagamento } = req.body;
+        
+        console.log('💰 Processando pagamento:', { vendaId, valor_pagamento });
 
-        const result = await db.query(`
-            UPDATE vendas 
-            SET pago = true, data_pagamento = CURRENT_TIMESTAMP
+        // Buscar a venda atual
+        const vendaResult = await db.query(`
+            SELECT total, valor_pago 
+            FROM vendas 
             WHERE id = $1 AND is_fiado = true
         `, [vendaId]);
 
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Venda não encontrada ou já paga' });
+        if (vendaResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Venda não encontrada' });
         }
+
+        const venda = vendaResult.rows[0];
+        const valorAtualPago = parseFloat(venda.valor_pago) || 0;
+        const valorTotal = parseFloat(venda.total);
+        const novoValorPago = valorAtualPago + parseFloat(valor_pagamento);
+
+        console.log('💰 Valores:', { 
+            valorTotal, 
+            valorAtualPago, 
+            valor_pagamento: parseFloat(valor_pagamento), 
+            novoValorPago 
+        });
+
+        // Verificar se não está pagando mais que o devido
+        if (novoValorPago > valorTotal) {
+            return res.status(400).json({ 
+                error: 'Valor do pagamento excede o valor total da venda' 
+            });
+        }
+
+        // Determinar se está totalmente pago
+        const totalmentePago = novoValorPago >= valorTotal;
+
+        // Atualizar a venda
+        const updateQuery = totalmentePago 
+            ? `UPDATE vendas 
+               SET valor_pago = $1, pago = true, data_pagamento = CURRENT_TIMESTAMP
+               WHERE id = $2`
+            : `UPDATE vendas 
+               SET valor_pago = $1
+               WHERE id = $2`;
+
+        await db.query(updateQuery, [novoValorPago, vendaId]);
+
+        // Registrar o pagamento no histórico
+        await db.query(`
+            INSERT INTO pagamentos (venda_id, valor, data_pagamento)
+            VALUES ($1, $2, CURRENT_TIMESTAMP)
+        `, [vendaId, valor_pagamento]);
 
         res.json({
             success: true,
-            message: 'Pagamento registrado com sucesso'
+            message: totalmentePago 
+                ? 'Pagamento total registrado com sucesso' 
+                : 'Pagamento parcial registrado com sucesso',
+            valor_pago: novoValorPago,
+            valor_restante: valorTotal - novoValorPago,
+            totalmente_pago: totalmentePago
         });
     } catch (error) {
-        console.error('Erro ao registrar pagamento:', error);
+        console.error('💰 Erro ao processar pagamento:', error);
         res.status(500).json({ error: 'Erro ao processar pagamento' });
     }
 });
