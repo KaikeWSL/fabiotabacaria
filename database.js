@@ -11,7 +11,12 @@ class Database {
             connectionString: process.env.DATABASE_URL || process.env.NEON_DATABASE_URL,
             ssl: {
                 rejectUnauthorized: false
-            }
+            },
+            // Configurações adicionais
+            application_name: 'tabacaria-fabio',
+            query_timeout: 20000,
+            // Configurar timezone nas conexões
+            options: '-c timezone=America/Sao_Paulo'
         });
     }
 
@@ -19,6 +24,10 @@ class Database {
         try {
             const client = await this.pool.connect();
             console.log('✅ Conectado ao banco de dados PostgreSQL');
+            
+            // Configurar timezone para Brasília
+            await client.query("SET timezone = 'America/Sao_Paulo'");
+            console.log('🇧🇷 Timezone configurado para Brasília');
             
             // Teste básico
             const result = await client.query('SELECT NOW()');

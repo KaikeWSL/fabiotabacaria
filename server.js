@@ -5,6 +5,9 @@ import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import Database from './database.js';
 
+// Configurar timezone do Node.js para Brasília
+process.env.TZ = 'America/Sao_Paulo';
+
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
@@ -417,7 +420,7 @@ app.post('/api/fiados/pay/:vendaId', async (req, res) => {
 
         const result = await db.query(`
             UPDATE vendas 
-            SET pago = true, data_pagamento = CURRENT_TIMESTAMP
+            SET pago = true
             WHERE id = $1 AND is_fiado = true
             RETURNING id, total
         `, [vendaId]);
@@ -460,7 +463,7 @@ app.post('/api/fiados/payall/:clienteId', async (req, res) => {
         // Fazer o update
         const result = await db.query(`
             UPDATE vendas 
-            SET pago = true, data_pagamento = CURRENT_TIMESTAMP
+            SET pago = true
             WHERE cliente_id = $1 AND is_fiado = true AND pago = false
             RETURNING id, total
         `, [clienteId]);
