@@ -384,27 +384,24 @@ app.post('/api/vendas', async (req, res) => {
 // Fiados
 app.get('/api/fiados', async (req, res) => {
     try {
-        console.log('📋 Buscando fiados...');
+        console.log('📋 Buscando fiados agrupados por cliente...');
         
         // Primeiro, tentar com a nova estrutura (valor_pago)
         let result;
         try {
             result = await db.query(`
                 SELECT 
-                    v.id,
-                    v.total,
-                    COALESCE(v.valor_pago, 0) as valor_pago,
-                    (v.total - COALESCE(v.valor_pago, 0)) as valor_restante,
-                    v.data_venda,
-                    v.pago,
                     c.id as cliente_id,
                     c.nome as cliente_nome,
-                    'Venda fiado' as descricao
+                    SUM(v.total - COALESCE(v.valor_pago, 0)) as valor_total,
+                    COUNT(v.id) as total_vendas,
+                    MAX(v.data_venda) as ultima_venda
                 FROM vendas v
                 JOIN clientes c ON v.cliente_id = c.id
                 WHERE v.is_fiado = true 
                 AND (v.total - COALESCE(v.valor_pago, 0)) > 0
-                ORDER BY v.data_venda DESC
+                GROUP BY c.id, c.nome
+                ORDER BY MAX(v.data_venda) DESC
             `);
         } catch (error) {
             console.log('⚠️ Coluna valor_pago não existe, usando estrutura antiga...');
@@ -412,30 +409,29 @@ app.get('/api/fiados', async (req, res) => {
             // Fallback para estrutura antiga (sem valor_pago)
             result = await db.query(`
                 SELECT 
-                    v.id,
-                    v.total,
-                    0 as valor_pago,
-                    v.total as valor_restante,
-                    v.data_venda,
-                    v.pago,
                     c.id as cliente_id,
                     c.nome as cliente_nome,
-                    'Venda fiado' as descricao
+                    SUM(v.total) as valor_total,
+                    COUNT(v.id) as total_vendas,
+                    MAX(v.data_venda) as ultima_venda
                 FROM vendas v
                 JOIN clientes c ON v.cliente_id = c.id
                 WHERE v.is_fiado = true AND v.pago = false
-                ORDER BY v.data_venda DESC
+                GROUP BY c.id, c.nome
+                ORDER BY MAX(v.data_venda) DESC
             `);
         }
 
         const fiados = result.rows.map(fiado => ({
-            ...fiado,
-            total: parseFloat(fiado.total),
-            valor_pago: parseFloat(fiado.valor_pago || 0),
-            valor_restante: parseFloat(fiado.valor_restante)
+            cliente_id: fiado.cliente_id,
+            cliente_nome: fiado.cliente_nome,
+            valor_total: parseFloat(fiado.valor_total),
+            total_vendas: parseInt(fiado.total_vendas),
+            ultima_venda: fiado.ultima_venda.toISOString(),
+            descricao: `${fiado.total_vendas} venda(s) em aberto`
         }));
 
-        console.log(`📋 Encontrados ${fiados.length} fiados`);
+        console.log(`📋 Encontrados ${fiados.length} clientes com fiado em aberto`);
         res.json(fiados);
     } catch (error) {
         console.error('Erro ao listar fiados:', error);
