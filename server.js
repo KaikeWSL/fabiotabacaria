@@ -427,11 +427,12 @@ app.get('/api/fiados', async (req, res) => {
             cliente_nome: fiado.cliente_nome,
             valor_total: parseFloat(fiado.valor_total),
             total_vendas: parseInt(fiado.total_vendas),
-            ultima_venda: fiado.ultima_venda.toISOString(),
+            ultima_venda: fiado.ultima_venda ? fiado.ultima_venda.toISOString() : null,
             descricao: `${fiado.total_vendas} venda(s) em aberto`
         }));
 
         console.log(`📋 Encontrados ${fiados.length} clientes com fiado em aberto`);
+        console.log('📋 Dados dos fiados:', fiados); // Debug
         res.json(fiados);
     } catch (error) {
         console.error('Erro ao listar fiados:', error);
