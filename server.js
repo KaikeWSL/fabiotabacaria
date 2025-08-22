@@ -397,48 +397,88 @@ app.get('/api/fiados/cliente/:id', async (req, res) => {
 app.post('/api/fiados/pay/:vendaId', async (req, res) => {
     try {
         const { vendaId } = req.params;
+        console.log('💰 Tentando quitar venda individual:', vendaId);
+
+        // Verificar se a venda existe
+        const vendaCheck = await db.query(`
+            SELECT id, total, pago FROM vendas 
+            WHERE id = $1 AND is_fiado = true
+        `, [vendaId]);
+
+        if (vendaCheck.rows.length === 0) {
+            console.log('⚠️ Venda não encontrada:', vendaId);
+            return res.status(404).json({ error: 'Venda não encontrada' });
+        }
+
+        if (vendaCheck.rows[0].pago) {
+            console.log('⚠️ Venda já está paga:', vendaId);
+            return res.status(400).json({ error: 'Venda já está paga' });
+        }
 
         const result = await db.query(`
             UPDATE vendas 
             SET pago = true, data_pagamento = CURRENT_TIMESTAMP
             WHERE id = $1 AND is_fiado = true
+            RETURNING id, total
         `, [vendaId]);
 
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Venda não encontrada ou já paga' });
-        }
+        console.log('✅ Venda quitada:', result.rows[0]);
 
         res.json({
             success: true,
-            message: 'Pagamento registrado com sucesso'
+            message: 'Pagamento registrado com sucesso',
+            venda_quitada: result.rows[0]
         });
     } catch (error) {
-        console.error('Erro ao registrar pagamento:', error);
-        res.status(500).json({ error: 'Erro ao processar pagamento' });
+        console.error('❌ Erro ao registrar pagamento:', error);
+        console.error('📍 Stack trace:', error.stack);
+        res.status(500).json({ 
+            error: 'Erro ao processar pagamento',
+            details: error.message
+        });
     }
 });
 
 app.post('/api/fiados/payall/:clienteId', async (req, res) => {
     try {
         const { clienteId } = req.params;
+        console.log('💰 Tentando quitar todas as vendas do cliente:', clienteId);
 
+        // Primeiro, verificar se existem vendas em aberto
+        const vendasCheck = await db.query(`
+            SELECT id, total FROM vendas 
+            WHERE cliente_id = $1 AND is_fiado = true AND pago = false
+        `, [clienteId]);
+
+        console.log('📋 Vendas encontradas para quitar:', vendasCheck.rows);
+
+        if (vendasCheck.rows.length === 0) {
+            console.log('⚠️ Nenhuma venda em aberto encontrada para o cliente:', clienteId);
+            return res.status(404).json({ error: 'Nenhuma venda encontrada para quitar' });
+        }
+
+        // Fazer o update
         const result = await db.query(`
             UPDATE vendas 
             SET pago = true, data_pagamento = CURRENT_TIMESTAMP
             WHERE cliente_id = $1 AND is_fiado = true AND pago = false
+            RETURNING id, total
         `, [clienteId]);
 
-        if (result.rowCount === 0) {
-            return res.status(404).json({ error: 'Nenhuma venda encontrada para quitar' });
-        }
+        console.log('✅ Vendas quitadas:', result.rows);
 
         res.json({
             success: true,
-            message: `${result.rowCount} venda(s) quitada(s) com sucesso`
+            message: `${result.rowCount} venda(s) quitada(s) com sucesso`,
+            vendas_quitadas: result.rows
         });
     } catch (error) {
-        console.error('Erro ao quitar todas as vendas:', error);
-        res.status(500).json({ error: 'Erro ao processar pagamento' });
+        console.error('❌ Erro detalhado ao quitar vendas:', error);
+        console.error('📍 Stack trace:', error.stack);
+        res.status(500).json({ 
+            error: 'Erro ao processar pagamento',
+            details: error.message
+        });
     }
 });
 
