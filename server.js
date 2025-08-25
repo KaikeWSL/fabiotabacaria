@@ -168,45 +168,66 @@ app.get('/api/dashboard', async (req, res) => {
 app.get('/api/dashboard/chart', async (req, res) => {
     try {
         const months = parseInt(req.query.months) || 6;
+        console.log('📊 Buscando dados do gráfico para', months, 'meses');
         
+        // Query mais simples e compatível com PostgreSQL/SQLite
         const chartData = await db.query(`
-            WITH meses AS (
-                SELECT 
-                    DATE_TRUNC('month', CURRENT_DATE - INTERVAL '${months - 1} months' + INTERVAL '${i} months') as mes
-                FROM generate_series(0, $1 - 1) as i
-            ),
-            vendas_dados AS (
-                SELECT 
-                    DATE_TRUNC('month', data_venda) as mes,
-                    SUM(CASE WHEN is_fiado = false THEN total ELSE 0 END) as vendas_vista,
-                    SUM(CASE WHEN is_fiado = true THEN total ELSE 0 END) as vendas_fiado,
-                    SUM(CASE WHEN is_fiado = true AND pago = true THEN total ELSE 0 END) as fiado_pago
-                FROM vendas 
-                WHERE data_venda >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '${months - 1} months')
-                GROUP BY DATE_TRUNC('month', data_venda)
-            )
             SELECT 
-                m.mes,
-                COALESCE(v.vendas_vista, 0) as vendas_vista,
-                COALESCE(v.vendas_fiado, 0) as vendas_fiado,
-                COALESCE(v.fiado_pago, 0) as fiado_pago
-            FROM meses m
-            LEFT JOIN vendas_dados v ON m.mes = v.mes
-            ORDER BY m.mes
-        `, [months]);
+                DATE_TRUNC('month', data_venda) as mes,
+                SUM(CASE WHEN is_fiado = false THEN total ELSE 0 END) as vendas_vista,
+                SUM(CASE WHEN is_fiado = true AND pago = false THEN total ELSE 0 END) as vendas_fiado,
+                SUM(CASE WHEN is_fiado = true AND pago = true THEN total ELSE 0 END) as fiado_pago
+            FROM vendas 
+            WHERE data_venda >= (CURRENT_DATE - INTERVAL '${months} months')
+            GROUP BY DATE_TRUNC('month', data_venda)
+            ORDER BY mes ASC
+        `);
+
+        console.log('📊 Dados encontrados:', chartData.rows.length, 'registros');
+
+        // Preencher meses faltantes no backend
+        const result = [];
+        const now = new Date();
+        
+        for (let i = months - 1; i >= 0; i--) {
+            const targetDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
+            const targetMonth = targetDate.toISOString().substring(0, 7);
+            
+            const foundData = chartData.rows.find(row => {
+                const rowMonth = new Date(row.mes).toISOString().substring(0, 7);
+                return rowMonth === targetMonth;
+            });
+            
+            if (foundData) {
+                result.push({
+                    mes: foundData.mes,
+                    vendas_vista: parseFloat(foundData.vendas_vista || 0),
+                    vendas_fiado: parseFloat(foundData.vendas_fiado || 0),
+                    fiado_pago: parseFloat(foundData.fiado_pago || 0)
+                });
+            } else {
+                result.push({
+                    mes: targetDate.toISOString(),
+                    vendas_vista: 0,
+                    vendas_fiado: 0,
+                    fiado_pago: 0
+                });
+            }
+        }
+
+        console.log('📊 Dados processados:', result.length, 'meses');
 
         res.json({
-            chart_data: chartData.rows.map(row => ({
-                mes: row.mes,
-                vendas_vista: parseFloat(row.vendas_vista),
-                vendas_fiado: parseFloat(row.vendas_fiado),
-                fiado_pago: parseFloat(row.fiado_pago)
-            }))
+            chart_data: result
         });
 
     } catch (error) {
-        console.error('Erro ao buscar dados do gráfico:', error);
-        res.status(500).json({ error: 'Erro ao carregar dados do gráfico' });
+        console.error('❌ Erro ao buscar dados do gráfico:', error);
+        console.error('📍 Stack trace:', error.stack);
+        res.status(500).json({ 
+            error: 'Erro ao carregar dados do gráfico',
+            details: error.message
+        });
     }
 });
 
