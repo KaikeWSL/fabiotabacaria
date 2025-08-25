@@ -442,6 +442,185 @@ app.post('/api/fiados/pay/:vendaId', async (req, res) => {
     }
 });
 
+app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
+    try {
+        const { vendaId } = req.params;
+        const { amount } = req.body;
+        console.log('💰 Tentando pagamento parcial da venda:', vendaId, 'valor:', amount);
+
+        if (!amount || amount <= 0) {
+            return res.status(400).json({ error: 'Valor de pagamento inválido' });
+        }
+
+        // Verificar se a venda existe
+        const vendaCheck = await db.query(`
+            SELECT id, total, pago FROM vendas 
+            WHERE id = $1 AND is_fiado = true
+        `, [vendaId]);
+
+        if (vendaCheck.rows.length === 0) {
+            console.log('⚠️ Venda não encontrada:', vendaId);
+            return res.status(404).json({ error: 'Venda não encontrada' });
+        }
+
+        if (vendaCheck.rows[0].pago) {
+            console.log('⚠️ Venda já está paga:', vendaId);
+            return res.status(400).json({ error: 'Venda já está paga' });
+        }
+
+        const vendaTotal = parseFloat(vendaCheck.rows[0].total);
+        const valorPagamento = parseFloat(amount);
+
+        if (valorPagamento > vendaTotal) {
+            return res.status(400).json({ error: 'Valor do pagamento não pode ser maior que o total da venda' });
+        }
+
+        // Se o pagamento for igual ao total, marcar como pago
+        if (valorPagamento === vendaTotal) {
+            const result = await db.query(`
+                UPDATE vendas 
+                SET pago = true
+                WHERE id = $1 AND is_fiado = true
+                RETURNING id, total
+            `, [vendaId]);
+
+            console.log('✅ Venda quitada completamente:', result.rows[0]);
+
+            res.json({
+                success: true,
+                message: 'Pagamento total registrado com sucesso',
+                venda_quitada: result.rows[0],
+                tipo_pagamento: 'total'
+            });
+        } else {
+            // Reduzir o valor da venda
+            const novoTotal = vendaTotal - valorPagamento;
+            const result = await db.query(`
+                UPDATE vendas 
+                SET total = $1
+                WHERE id = $2 AND is_fiado = true
+                RETURNING id, total
+            `, [novoTotal, vendaId]);
+
+            console.log('✅ Pagamento parcial registrado:', result.rows[0], 'valor pago:', valorPagamento);
+
+            res.json({
+                success: true,
+                message: 'Pagamento parcial registrado com sucesso',
+                venda_atualizada: result.rows[0],
+                valor_pago: valorPagamento,
+                saldo_restante: novoTotal,
+                tipo_pagamento: 'parcial'
+            });
+        }
+    } catch (error) {
+        console.error('❌ Erro ao registrar pagamento parcial:', error);
+        console.error('📍 Stack trace:', error.stack);
+        res.status(500).json({ 
+            error: 'Erro ao processar pagamento parcial',
+            details: error.message
+        });
+    }
+});
+
+app.post('/api/fiados/pay-partial-client/:clienteId', async (req, res) => {
+    try {
+        const { clienteId } = req.params;
+        const { amount } = req.body;
+        console.log('💰 Tentando pagamento parcial do cliente:', clienteId, 'valor:', amount);
+
+        if (!amount || amount <= 0) {
+            return res.status(400).json({ error: 'Valor de pagamento inválido' });
+        }
+
+        // Buscar todas as vendas em aberto do cliente, ordenadas pela mais antiga
+        const vendasAbertas = await db.query(`
+            SELECT id, total FROM vendas 
+            WHERE cliente_id = $1 AND is_fiado = true AND pago = false
+            ORDER BY data_venda ASC
+        `, [clienteId]);
+
+        if (vendasAbertas.rows.length === 0) {
+            return res.status(404).json({ error: 'Nenhuma venda em aberto encontrada para este cliente' });
+        }
+
+        const totalDevido = vendasAbertas.rows.reduce((sum, venda) => sum + parseFloat(venda.total), 0);
+        const valorPagamento = parseFloat(amount);
+
+        if (valorPagamento > totalDevido) {
+            return res.status(400).json({ error: 'Valor do pagamento não pode ser maior que o total devido' });
+        }
+
+        let valorRestante = valorPagamento;
+        const vendasQuitadas = [];
+        const vendasAtualizadas = [];
+
+        // Processar pagamento começando pelas vendas mais antigas
+        for (const venda of vendasAbertas.rows) {
+            const valorVenda = parseFloat(venda.total);
+            
+            if (valorRestante >= valorVenda) {
+                // Quitar a venda completamente
+                await db.query(`
+                    UPDATE vendas 
+                    SET pago = true
+                    WHERE id = $1
+                `, [venda.id]);
+                
+                vendasQuitadas.push({
+                    id: venda.id,
+                    valor_original: valorVenda,
+                    valor_pago: valorVenda
+                });
+                
+                valorRestante -= valorVenda;
+            } else if (valorRestante > 0) {
+                // Pagamento parcial desta venda
+                const novoTotal = valorVenda - valorRestante;
+                await db.query(`
+                    UPDATE vendas 
+                    SET total = $1
+                    WHERE id = $2
+                `, [novoTotal, venda.id]);
+                
+                vendasAtualizadas.push({
+                    id: venda.id,
+                    valor_original: valorVenda,
+                    valor_pago: valorRestante,
+                    novo_total: novoTotal
+                });
+                
+                valorRestante = 0;
+            }
+            
+            if (valorRestante === 0) break;
+        }
+
+        console.log('✅ Pagamento parcial do cliente processado:', {
+            cliente_id: clienteId,
+            valor_pago: valorPagamento,
+            vendas_quitadas: vendasQuitadas,
+            vendas_atualizadas: vendasAtualizadas
+        });
+
+        res.json({
+            success: true,
+            message: 'Pagamento parcial registrado com sucesso',
+            valor_pago: valorPagamento,
+            vendas_quitadas: vendasQuitadas,
+            vendas_atualizadas: vendasAtualizadas,
+            total_vendas_afetadas: vendasQuitadas.length + vendasAtualizadas.length
+        });
+    } catch (error) {
+        console.error('❌ Erro ao registrar pagamento parcial do cliente:', error);
+        console.error('📍 Stack trace:', error.stack);
+        res.status(500).json({ 
+            error: 'Erro ao processar pagamento parcial',
+            details: error.message
+        });
+    }
+});
+
 app.post('/api/fiados/payall/:clienteId', async (req, res) => {
     try {
         const { clienteId } = req.params;
