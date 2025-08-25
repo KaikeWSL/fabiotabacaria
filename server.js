@@ -69,7 +69,43 @@ app.get('/api/dashboard', async (req, res) => {
             AND EXTRACT(YEAR FROM data_venda) = EXTRACT(YEAR FROM CURRENT_DATE)
         `);
 
-        // Total fiado
+        // Vendas mês passado
+        const vendasMesPassado = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as vendas_mes_passado 
+            FROM vendas 
+            WHERE EXTRACT(MONTH FROM data_venda) = EXTRACT(MONTH FROM CURRENT_DATE - INTERVAL '1 month')
+            AND EXTRACT(YEAR FROM data_venda) = EXTRACT(YEAR FROM CURRENT_DATE - INTERVAL '1 month')
+        `);
+
+        // Vendas esta semana
+        const vendasSemana = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as vendas_semana 
+            FROM vendas 
+            WHERE data_venda >= DATE_TRUNC('week', CURRENT_DATE)
+        `);
+
+        // Vendas à vista hoje
+        const vendasVistaHoje = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as vendas_vista_hoje 
+            FROM vendas 
+            WHERE DATE(data_venda) = CURRENT_DATE AND is_fiado = false
+        `);
+
+        // Fiado hoje
+        const fiadoHoje = await db.query(`
+            SELECT COALESCE(SUM(total), 0) as fiado_hoje 
+            FROM vendas 
+            WHERE DATE(data_venda) = CURRENT_DATE AND is_fiado = true
+        `);
+
+        // Fiado pago hoje (assumindo que vendas pagas hoje foram atualizadas hoje)
+        const fiadoPagoHoje = await db.query(`
+            SELECT COALESCE(SUM(v.total), 0) as fiado_pago_hoje 
+            FROM vendas v
+            WHERE DATE(v.data_venda) = CURRENT_DATE AND v.is_fiado = true AND v.pago = true
+        `);
+
+        // Total fiado em aberto
         const totalFiado = await db.query(`
             SELECT COALESCE(SUM(total), 0) as total_fiado 
             FROM vendas 
@@ -83,16 +119,94 @@ app.get('/api/dashboard', async (req, res) => {
             WHERE quantidade_estoque <= estoque_minimo
         `);
 
+        // Total de clientes
+        const totalClientes = await db.query(`
+            SELECT COUNT(*) as total_clientes 
+            FROM clientes
+        `);
+
+        // Total de produtos
+        const totalProdutos = await db.query(`
+            SELECT COUNT(*) as total_produtos 
+            FROM produtos
+        `);
+
+        const vendasHojeVal = parseFloat(vendasHoje.rows[0].vendas_hoje);
+        const vendasMesVal = parseFloat(vendasMes.rows[0].vendas_mes);
+        const vendasMesPassadoVal = parseFloat(vendasMesPassado.rows[0].vendas_mes_passado);
+        
+        // Calcular crescimento
+        let crescimento = 0;
+        if (vendasMesPassadoVal > 0) {
+            crescimento = ((vendasMesVal - vendasMesPassadoVal) / vendasMesPassadoVal) * 100;
+        } else if (vendasMesVal > 0) {
+            crescimento = 100;
+        }
+
         res.json({
-            vendas_hoje: parseFloat(vendasHoje.rows[0].vendas_hoje),
-            vendas_mes: parseFloat(vendasMes.rows[0].vendas_mes),
+            vendas_hoje: vendasHojeVal,
+            vendas_mes: vendasMesVal,
+            vendas_mes_passado: vendasMesPassadoVal,
+            vendas_semana: parseFloat(vendasSemana.rows[0].vendas_semana),
+            vendas_vista_hoje: parseFloat(vendasVistaHoje.rows[0].vendas_vista_hoje),
+            fiado_hoje: parseFloat(fiadoHoje.rows[0].fiado_hoje),
+            fiado_pago_hoje: parseFloat(fiadoPagoHoje.rows[0].fiado_pago_hoje),
             total_fiado: parseFloat(totalFiado.rows[0].total_fiado),
-            estoque_baixo: parseInt(estoqueBaixo.rows[0].estoque_baixo)
+            estoque_baixo: parseInt(estoqueBaixo.rows[0].estoque_baixo),
+            total_clientes: parseInt(totalClientes.rows[0].total_clientes),
+            total_produtos: parseInt(totalProdutos.rows[0].total_produtos),
+            crescimento_mes: parseFloat(crescimento.toFixed(1))
         });
 
     } catch (error) {
         console.error('Erro no dashboard:', error);
         res.status(500).json({ error: 'Erro ao carregar dashboard' });
+    }
+});
+
+// Chart data for dashboard
+app.get('/api/dashboard/chart', async (req, res) => {
+    try {
+        const months = parseInt(req.query.months) || 6;
+        
+        const chartData = await db.query(`
+            WITH meses AS (
+                SELECT 
+                    DATE_TRUNC('month', CURRENT_DATE - INTERVAL '${months - 1} months' + INTERVAL '${i} months') as mes
+                FROM generate_series(0, $1 - 1) as i
+            ),
+            vendas_dados AS (
+                SELECT 
+                    DATE_TRUNC('month', data_venda) as mes,
+                    SUM(CASE WHEN is_fiado = false THEN total ELSE 0 END) as vendas_vista,
+                    SUM(CASE WHEN is_fiado = true THEN total ELSE 0 END) as vendas_fiado,
+                    SUM(CASE WHEN is_fiado = true AND pago = true THEN total ELSE 0 END) as fiado_pago
+                FROM vendas 
+                WHERE data_venda >= DATE_TRUNC('month', CURRENT_DATE - INTERVAL '${months - 1} months')
+                GROUP BY DATE_TRUNC('month', data_venda)
+            )
+            SELECT 
+                m.mes,
+                COALESCE(v.vendas_vista, 0) as vendas_vista,
+                COALESCE(v.vendas_fiado, 0) as vendas_fiado,
+                COALESCE(v.fiado_pago, 0) as fiado_pago
+            FROM meses m
+            LEFT JOIN vendas_dados v ON m.mes = v.mes
+            ORDER BY m.mes
+        `, [months]);
+
+        res.json({
+            chart_data: chartData.rows.map(row => ({
+                mes: row.mes,
+                vendas_vista: parseFloat(row.vendas_vista),
+                vendas_fiado: parseFloat(row.vendas_fiado),
+                fiado_pago: parseFloat(row.fiado_pago)
+            }))
+        });
+
+    } catch (error) {
+        console.error('Erro ao buscar dados do gráfico:', error);
+        res.status(500).json({ error: 'Erro ao carregar dados do gráfico' });
     }
 });
 
