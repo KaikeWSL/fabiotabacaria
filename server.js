@@ -27,22 +27,6 @@ app.use(express.static(path.join(__dirname, '../frontend')));
 // Conectar ao banco na inicialização
 await db.connect();
 
-// Garantir que a tabela pagamentos_parciais existe
-try {
-    await db.query(`
-        CREATE TABLE IF NOT EXISTS pagamentos_parciais (
-            id SERIAL PRIMARY KEY,
-            venda_id INTEGER REFERENCES vendas(id),
-            valor_pago DECIMAL(10,2) NOT NULL,
-            data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            observacao TEXT
-        )
-    `);
-    console.log('✅ Tabela pagamentos_parciais verificada/criada');
-} catch (error) {
-    console.warn('⚠️ Erro ao criar tabela pagamentos_parciais:', error.message);
-}
-
 // Routes
 
 // Authentication
@@ -114,23 +98,12 @@ app.get('/api/dashboard', async (req, res) => {
             WHERE DATE(data_venda) = CURRENT_DATE AND is_fiado = true
         `);
 
-        // Fiado pago hoje (incluindo pagamentos parciais)
-        let fiadoPagoHoje;
-        try {
-            fiadoPagoHoje = await db.query(`
-                SELECT COALESCE(SUM(pp.valor_pago), 0) as fiado_pago_hoje
-                FROM pagamentos_parciais pp
-                WHERE DATE(pp.data_pagamento) = CURRENT_DATE
-            `);
-        } catch (error) {
-            console.warn('⚠️ Tabela pagamentos_parciais não existe ainda, usando fallback');
-            fiadoPagoHoje = await db.query(`
-                SELECT COALESCE(SUM(v.total), 0) as fiado_pago_hoje 
-                FROM vendas v
-                WHERE v.is_fiado = true AND v.pago = true
-                AND DATE(v.data_venda) = CURRENT_DATE
-            `);
-        }
+        // Fiado pago hoje (assumindo que vendas pagas hoje foram atualizadas hoje)
+        const fiadoPagoHoje = await db.query(`
+            SELECT COALESCE(SUM(v.total), 0) as fiado_pago_hoje 
+            FROM vendas v
+            WHERE DATE(v.data_venda) = CURRENT_DATE AND v.is_fiado = true AND v.pago = true
+        `);
 
         // Total fiado em aberto
         const totalFiado = await db.query(`
@@ -191,98 +164,8 @@ app.get('/api/dashboard', async (req, res) => {
     }
 });
 
-// Chart data for dashboard
-app.get('/api/dashboard/chart', async (req, res) => {
-    try {
-        const months = parseInt(req.query.months) || 6;
-        console.log('📊 Buscando dados do gráfico para', months, 'meses');
-        
-        // Query mais simples e compatível com PostgreSQL/SQLite
-        const chartData = await db.query(`
-            SELECT 
-                DATE_TRUNC('month', data_venda) as mes,
-                SUM(CASE WHEN is_fiado = false THEN total ELSE 0 END) as vendas_vista,
-                SUM(CASE WHEN is_fiado = true AND pago = false THEN total ELSE 0 END) as vendas_fiado,
-                SUM(CASE WHEN is_fiado = true AND pago = true THEN total ELSE 0 END) as fiado_pago
-            FROM vendas 
-            WHERE data_venda >= (CURRENT_DATE - INTERVAL '${months} months')
-            GROUP BY DATE_TRUNC('month', data_venda)
-            ORDER BY mes ASC
-        `);
 
-        // Buscar pagamentos parciais por mês
-        let pagamentosParciais;
-        try {
-            pagamentosParciais = await db.query(`
-                SELECT 
-                    DATE_TRUNC('month', pp.data_pagamento) as mes,
-                    SUM(pp.valor_pago) as pagamentos_parciais
-                FROM pagamentos_parciais pp
-                WHERE pp.data_pagamento >= (CURRENT_DATE - INTERVAL '${months} months')
-                GROUP BY DATE_TRUNC('month', pp.data_pagamento)
-            `);
-        } catch (error) {
-            console.warn('⚠️ Tabela pagamentos_parciais não existe ainda, usando dados vazios');
-            pagamentosParciais = { rows: [] };
-        }
 
-        console.log('📊 Dados encontrados:', chartData.rows.length, 'registros');
-        console.log('📊 Pagamentos parciais:', pagamentosParciais.rows.length, 'registros');
-
-        // Criar mapa de pagamentos parciais por mês
-        const pagamentosMap = {};
-        pagamentosParciais.rows.forEach(row => {
-            const monthKey = new Date(row.mes).toISOString().substring(0, 7);
-            pagamentosMap[monthKey] = parseFloat(row.pagamentos_parciais || 0);
-        });
-
-        // Preencher meses faltantes no backend
-        const result = [];
-        const now = new Date();
-        
-        for (let i = months - 1; i >= 0; i--) {
-            const targetDate = new Date(now.getFullYear(), now.getMonth() - i, 1);
-            const targetMonth = targetDate.toISOString().substring(0, 7);
-            
-            const foundData = chartData.rows.find(row => {
-                const rowMonth = new Date(row.mes).toISOString().substring(0, 7);
-                return rowMonth === targetMonth;
-            });
-            
-            const pagamentosParciais = pagamentosMap[targetMonth] || 0;
-            
-            if (foundData) {
-                result.push({
-                    mes: foundData.mes,
-                    vendas_vista: parseFloat(foundData.vendas_vista || 0),
-                    vendas_fiado: parseFloat(foundData.vendas_fiado || 0),
-                    fiado_pago: parseFloat(foundData.fiado_pago || 0) + pagamentosParciais
-                });
-            } else {
-                result.push({
-                    mes: targetDate.toISOString(),
-                    vendas_vista: 0,
-                    vendas_fiado: 0,
-                    fiado_pago: pagamentosParciais
-                });
-            }
-        }
-
-        console.log('📊 Dados processados:', result.length, 'meses');
-
-        res.json({
-            chart_data: result
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao buscar dados do gráfico:', error);
-        console.error('📍 Stack trace:', error.stack);
-        res.status(500).json({ 
-            error: 'Erro ao carregar dados do gráfico',
-            details: error.message
-        });
-    }
-});
 
 // Produtos
 app.get('/api/produtos', async (req, res) => {
@@ -742,7 +625,6 @@ app.post('/api/fiados/pay-partial-client/:clienteId', async (req, res) => {
         let valorRestante = valorPagamento;
         const vendasQuitadas = [];
         const vendasAtualizadas = [];
-        const pagamentosRegistrados = [];
 
         // Processar pagamento começando pelas vendas mais antigas
         for (const venda of vendasAbertas.rows) {
@@ -756,20 +638,9 @@ app.post('/api/fiados/pay-partial-client/:clienteId', async (req, res) => {
                     WHERE id = $1
                 `, [venda.id]);
                 
-                // Registrar pagamento completo
-                await db.query(`
-                    INSERT INTO pagamentos_parciais (venda_id, valor_pago, observacao)
-                    VALUES ($1, $2, $3)
-                `, [venda.id, valorVenda, 'Pagamento total']);
-                
                 vendasQuitadas.push({
                     id: venda.id,
                     valor_original: valorVenda,
-                    valor_pago: valorVenda
-                });
-                
-                pagamentosRegistrados.push({
-                    venda_id: venda.id,
                     valor_pago: valorVenda
                 });
                 
@@ -783,22 +654,11 @@ app.post('/api/fiados/pay-partial-client/:clienteId', async (req, res) => {
                     WHERE id = $2
                 `, [novoTotal, venda.id]);
                 
-                // Registrar pagamento parcial
-                await db.query(`
-                    INSERT INTO pagamentos_parciais (venda_id, valor_pago, observacao)
-                    VALUES ($1, $2, $3)
-                `, [venda.id, valorRestante, 'Pagamento parcial']);
-                
                 vendasAtualizadas.push({
                     id: venda.id,
                     valor_original: valorVenda,
                     valor_pago: valorRestante,
                     novo_total: novoTotal
-                });
-                
-                pagamentosRegistrados.push({
-                    venda_id: venda.id,
-                    valor_pago: valorRestante
                 });
                 
                 valorRestante = 0;
@@ -811,8 +671,7 @@ app.post('/api/fiados/pay-partial-client/:clienteId', async (req, res) => {
             cliente_id: clienteId,
             valor_pago: valorPagamento,
             vendas_quitadas: vendasQuitadas,
-            vendas_atualizadas: vendasAtualizadas,
-            pagamentos_registrados: pagamentosRegistrados
+            vendas_atualizadas: vendasAtualizadas
         });
 
         res.json({
