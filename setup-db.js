@@ -66,6 +66,18 @@ async function setupDatabase() {
         `);
         console.log('✅ Tabela itens_venda OK');
 
+        // Criar tabela pagamentos_parciais
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS pagamentos_parciais (
+                id SERIAL PRIMARY KEY,
+                venda_id INTEGER REFERENCES vendas(id),
+                valor_pago DECIMAL(10,2) NOT NULL,
+                data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                observacao TEXT
+            )
+        `);
+        console.log('✅ Tabela pagamentos_parciais OK');
+
         // Verificar dados existentes
         const produtosCount = await db.query('SELECT COUNT(*) FROM produtos');
         const clientesCount = await db.query('SELECT COUNT(*) FROM clientes');
