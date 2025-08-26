@@ -49,6 +49,50 @@ function setCache(key, data) {
     cache.set(key, { data, timestamp: Date.now() });
 }
 
+// Função para verificar e criar tabelas necessárias
+async function ensureTablesExist() {
+    try {
+        console.log('🔧 Verificando tabelas necessárias...');
+        
+        // Verificar se tabela consumo existe
+        const checkConsumoTable = `
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'consumo'
+            );
+        `;
+        
+        const result = await db.query(checkConsumoTable);
+        const tableExists = result.rows[0].exists;
+        
+        if (!tableExists) {
+            console.log('📋 Criando tabela consumo...');
+            
+            const createConsumoTable = `
+                CREATE TABLE consumo (
+                    id SERIAL PRIMARY KEY,
+                    produto_id INTEGER REFERENCES produtos(id),
+                    produto_nome VARCHAR(255) NOT NULL,
+                    quantidade INTEGER NOT NULL,
+                    preco_unitario DECIMAL(10,2) NOT NULL,
+                    total DECIMAL(10,2) NOT NULL,
+                    observacao TEXT,
+                    data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            `;
+            
+            await db.query(createConsumoTable);
+            console.log('✅ Tabela consumo criada com sucesso!');
+        } else {
+            console.log('✅ Tabela consumo já existe');
+        }
+        
+    } catch (error) {
+        console.error('❌ Erro ao verificar/criar tabelas:', error);
+        // Não parar o servidor, apenas logar o erro
+    }
+}
+
 // Conectar ao banco na inicialização com retry
 async function initializeDatabase() {
     let retries = 3;
@@ -886,7 +930,7 @@ app.post('/api/consumo', async (req, res) => {
         }
 
         const produto = produtoResult.rows[0];
-        if (quantidade > produto.estoque_atual) {
+        if (quantidade > produto.quantidade_estoque) {
             return res.status(400).json({ 
                 error: 'Quantidade maior que estoque disponível' 
             });
@@ -917,7 +961,7 @@ app.post('/api/consumo', async (req, res) => {
             // Atualizar estoque do produto
             const updateEstoqueQuery = `
                 UPDATE produtos 
-                SET estoque_atual = estoque_atual - $1,
+                SET quantidade_estoque = quantidade_estoque - $1,
                     data_modificacao = NOW()
                 WHERE id = $2
                 RETURNING *
@@ -979,7 +1023,7 @@ app.delete('/api/consumo/:id', async (req, res) => {
             // Restaurar estoque do produto
             const updateEstoqueQuery = `
                 UPDATE produtos 
-                SET estoque_atual = estoque_atual + $1,
+                SET quantidade_estoque = quantidade_estoque + $1,
                     data_modificacao = NOW()
                 WHERE id = $2
             `;
@@ -1042,13 +1086,16 @@ app.use((error, req, res, next) => {
 });
 
 // Iniciar servidor
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
     console.log('🌐 Servidor Node.js iniciado!');
     console.log(`📱 Acesse pelo celular: http://SEU_IP:${PORT}`);
     console.log(`💻 Acesse pelo PC: http://localhost:${PORT}`);
     console.log('🔗 Para descobrir seu IP, execute: ipconfig');
     console.log('⚡ Pressione Ctrl+C para parar o servidor');
     console.log(`🚀 Ambiente: ${process.env.NODE_ENV || 'development'}`);
+    
+    // Verificar e criar tabelas necessárias
+    await ensureTablesExist();
 });
 
 // Limpeza periódica do cache (a cada 10 minutos)
