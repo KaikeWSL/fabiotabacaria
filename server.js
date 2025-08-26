@@ -816,6 +816,208 @@ app.post('/api/fiados/payall/:clienteId', async (req, res) => {
     }
 });
 
+// ===== ROTAS DE CONSUMO =====
+
+// Listar consumos
+app.get('/api/consumo', async (req, res) => {
+    try {
+        const cacheKey = 'consumo_list';
+        const cached = getCached(cacheKey);
+        if (cached) {
+            return res.json({ success: true, data: cached });
+        }
+
+        const query = `
+            SELECT 
+                c.id,
+                c.produto_id,
+                c.produto_nome,
+                c.quantidade,
+                c.preco_unitario,
+                c.total,
+                c.observacao,
+                c.data_criacao as data,
+                p.nome as produto_nome_atual
+            FROM consumo c
+            LEFT JOIN produtos p ON c.produto_id = p.id
+            ORDER BY c.data_criacao DESC
+        `;
+
+        const result = await db.query(query);
+        const consumos = result.rows;
+
+        setCache(cacheKey, consumos);
+        res.json({ success: true, data: consumos });
+    } catch (error) {
+        console.error('❌ Erro ao listar consumos:', error);
+        res.status(500).json({ 
+            error: 'Erro ao carregar consumos',
+            details: error.message
+        });
+    }
+});
+
+// Criar novo consumo
+app.post('/api/consumo', async (req, res) => {
+    try {
+        const { produto_id, produto_nome, quantidade, preco_unitario, total, observacao } = req.body;
+
+        // Validações
+        if (!produto_id || !quantidade || !preco_unitario) {
+            return res.status(400).json({ 
+                error: 'Produto, quantidade e preço são obrigatórios' 
+            });
+        }
+
+        if (quantidade <= 0 || preco_unitario <= 0) {
+            return res.status(400).json({ 
+                error: 'Quantidade e preço devem ser maiores que zero' 
+            });
+        }
+
+        // Verificar se produto existe e tem estoque suficiente
+        const produtoResult = await db.query(
+            'SELECT * FROM produtos WHERE id = $1',
+            [produto_id]
+        );
+
+        if (produtoResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Produto não encontrado' });
+        }
+
+        const produto = produtoResult.rows[0];
+        if (quantidade > produto.estoque_atual) {
+            return res.status(400).json({ 
+                error: 'Quantidade maior que estoque disponível' 
+            });
+        }
+
+        // Iniciar transação
+        await db.query('BEGIN');
+
+        try {
+            // Inserir consumo
+            const insertConsumoQuery = `
+                INSERT INTO consumo (
+                    produto_id, produto_nome, quantidade, 
+                    preco_unitario, total, observacao, data_criacao
+                ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+                RETURNING *
+            `;
+
+            const consumoResult = await db.query(insertConsumoQuery, [
+                produto_id,
+                produto_nome || produto.nome,
+                quantidade,
+                preco_unitario,
+                total || (quantidade * preco_unitario),
+                observacao
+            ]);
+
+            // Atualizar estoque do produto
+            const updateEstoqueQuery = `
+                UPDATE produtos 
+                SET estoque_atual = estoque_atual - $1,
+                    data_modificacao = NOW()
+                WHERE id = $2
+                RETURNING *
+            `;
+
+            await db.query(updateEstoqueQuery, [quantidade, produto_id]);
+
+            // Confirmar transação
+            await db.query('COMMIT');
+
+            // Limpar cache relacionado
+            cache.delete('consumo_list');
+            cache.delete('produtos_list');
+            cache.delete('dashboard_data');
+
+            console.log(`✅ Consumo criado: ${produto_nome || produto.nome} - Qtd: ${quantidade}`);
+
+            res.status(201).json({
+                success: true,
+                message: 'Consumo registrado com sucesso',
+                data: consumoResult.rows[0]
+            });
+
+        } catch (error) {
+            await db.query('ROLLBACK');
+            throw error;
+        }
+
+    } catch (error) {
+        console.error('❌ Erro ao criar consumo:', error);
+        res.status(500).json({ 
+            error: 'Erro ao registrar consumo',
+            details: error.message
+        });
+    }
+});
+
+// Deletar consumo
+app.delete('/api/consumo/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // Buscar dados do consumo antes de deletar
+        const consumoResult = await db.query(
+            'SELECT * FROM consumo WHERE id = $1',
+            [id]
+        );
+
+        if (consumoResult.rows.length === 0) {
+            return res.status(404).json({ error: 'Consumo não encontrado' });
+        }
+
+        const consumo = consumoResult.rows[0];
+
+        // Iniciar transação
+        await db.query('BEGIN');
+
+        try {
+            // Restaurar estoque do produto
+            const updateEstoqueQuery = `
+                UPDATE produtos 
+                SET estoque_atual = estoque_atual + $1,
+                    data_modificacao = NOW()
+                WHERE id = $2
+            `;
+
+            await db.query(updateEstoqueQuery, [consumo.quantidade, consumo.produto_id]);
+
+            // Deletar consumo
+            await db.query('DELETE FROM consumo WHERE id = $1', [id]);
+
+            // Confirmar transação
+            await db.query('COMMIT');
+
+            // Limpar cache relacionado
+            cache.delete('consumo_list');
+            cache.delete('produtos_list');
+            cache.delete('dashboard_data');
+
+            console.log(`✅ Consumo deletado: ID ${id}`);
+
+            res.json({
+                success: true,
+                message: 'Consumo excluído com sucesso'
+            });
+
+        } catch (error) {
+            await db.query('ROLLBACK');
+            throw error;
+        }
+
+    } catch (error) {
+        console.error('❌ Erro ao deletar consumo:', error);
+        res.status(500).json({ 
+            error: 'Erro ao excluir consumo',
+            details: error.message
+        });
+    }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ 

@@ -66,24 +66,29 @@ async function setupDatabase() {
         `);
         console.log('✅ Tabela itens_venda OK');
 
-        // Criar tabela pagamentos_parciais
+        // Criar tabela consumo
         await db.query(`
-            CREATE TABLE IF NOT EXISTS pagamentos_parciais (
+            CREATE TABLE IF NOT EXISTS consumo (
                 id SERIAL PRIMARY KEY,
-                venda_id INTEGER REFERENCES vendas(id),
-                valor_pago DECIMAL(10,2) NOT NULL,
-                data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                observacao TEXT
+                produto_id INTEGER REFERENCES produtos(id),
+                produto_nome VARCHAR(255) NOT NULL,
+                quantidade INTEGER NOT NULL,
+                preco_unitario DECIMAL(10,2) NOT NULL,
+                total DECIMAL(10,2) NOT NULL,
+                observacao TEXT,
+                data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
-        console.log('✅ Tabela pagamentos_parciais OK');
+        console.log('✅ Tabela consumo OK');
 
         // Verificar dados existentes
         const produtosCount = await db.query('SELECT COUNT(*) FROM produtos');
         const clientesCount = await db.query('SELECT COUNT(*) FROM clientes');
+        const consumoCount = await db.query('SELECT COUNT(*) FROM consumo');
         
         console.log(`📊 Produtos existentes: ${produtosCount.rows[0].count}`);
         console.log(`📊 Clientes existentes: ${clientesCount.rows[0].count}`);
+        console.log(`📊 Consumos registrados: ${consumoCount.rows[0].count}`);
 
         console.log('🎉 Banco de dados configurado com sucesso!');
 
