@@ -961,8 +961,7 @@ app.post('/api/consumo', async (req, res) => {
             // Atualizar estoque do produto
             const updateEstoqueQuery = `
                 UPDATE produtos 
-                SET quantidade_estoque = quantidade_estoque - $1,
-                    data_modificacao = NOW()
+                SET quantidade_estoque = quantidade_estoque - $1
                 WHERE id = $2
                 RETURNING *
             `;
@@ -1023,8 +1022,7 @@ app.delete('/api/consumo/:id', async (req, res) => {
             // Restaurar estoque do produto
             const updateEstoqueQuery = `
                 UPDATE produtos 
-                SET quantidade_estoque = quantidade_estoque + $1,
-                    data_modificacao = NOW()
+                SET quantidade_estoque = quantidade_estoque + $1
                 WHERE id = $2
             `;
 
