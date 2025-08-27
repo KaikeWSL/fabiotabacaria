@@ -179,7 +179,8 @@ app.get('/api/dashboard', async (req, res) => {
                 SELECT 
                     (SELECT COUNT(*) FROM produtos WHERE quantidade_estoque <= estoque_minimo) as estoque_baixo,
                     (SELECT COUNT(*) FROM clientes) as total_clientes,
-                    (SELECT COUNT(*) FROM produtos) as total_produtos
+                    (SELECT COUNT(*) FROM produtos) as total_produtos,
+                    (SELECT COALESCE(SUM(total), 0) FROM consumo WHERE DATE(data_criacao) = CURRENT_DATE) as consumo_hoje
             )
             SELECT vs.*, c.*
             FROM vendas_stats vs, contadores c;
@@ -211,6 +212,7 @@ app.get('/api/dashboard', async (req, res) => {
             estoque_baixo: parseInt(data.estoque_baixo || 0),
             total_clientes: parseInt(data.total_clientes || 0),
             total_produtos: parseInt(data.total_produtos || 0),
+            consumo_hoje: parseFloat(data.consumo_hoje || 0),
             crescimento_mes: parseFloat(crescimento.toFixed(1))
         };
 
@@ -339,6 +341,194 @@ app.put('/api/produtos/:id', async (req, res) => {
     } catch (error) {
         console.error('Erro ao atualizar produto:', error);
         res.status(500).json({ error: 'Erro ao atualizar produto' });
+    }
+});
+
+// ===== ENDPOINTS PARA GRÁFICOS =====
+
+// Vendas por período (para gráfico de linha)
+app.get('/api/charts/sales-period', async (req, res) => {
+    try {
+        const { days = 7 } = req.query;
+        
+        const query = `
+            WITH date_series AS (
+                SELECT generate_series(
+                    CURRENT_DATE - INTERVAL '${parseInt(days) - 1} days',
+                    CURRENT_DATE,
+                    '1 day'
+                )::date AS date
+            ),
+            daily_sales AS (
+                SELECT 
+                    DATE(data_venda) as date,
+                    SUM(total) as total_vendas,
+                    SUM(CASE WHEN is_fiado = false THEN total ELSE 0 END) as vendas_vista,
+                    SUM(CASE WHEN is_fiado = true THEN total ELSE 0 END) as vendas_fiado,
+                    COUNT(*) as num_vendas
+                FROM vendas 
+                WHERE data_venda >= CURRENT_DATE - INTERVAL '${parseInt(days) - 1} days'
+                GROUP BY DATE(data_venda)
+            )
+            SELECT 
+                ds.date,
+                COALESCE(s.total_vendas, 0) as total_vendas,
+                COALESCE(s.vendas_vista, 0) as vendas_vista,
+                COALESCE(s.vendas_fiado, 0) as vendas_fiado,
+                COALESCE(s.num_vendas, 0) as num_vendas
+            FROM date_series ds
+            LEFT JOIN daily_sales s ON ds.date = s.date
+            ORDER BY ds.date;
+        `;
+
+        const result = await db.query(query);
+        
+        const data = result.rows.map(row => ({
+            date: row.date,
+            total_vendas: parseFloat(row.total_vendas || 0),
+            vendas_vista: parseFloat(row.vendas_vista || 0),
+            vendas_fiado: parseFloat(row.vendas_fiado || 0),
+            num_vendas: parseInt(row.num_vendas || 0)
+        }));
+
+        res.json(data);
+    } catch (error) {
+        console.error('Erro ao buscar vendas por período:', error);
+        res.status(500).json({ error: 'Erro ao carregar dados de vendas' });
+    }
+});
+
+// Top produtos mais vendidos
+app.get('/api/charts/top-products', async (req, res) => {
+    try {
+        const { period = 'month' } = req.query;
+        
+        let dateFilter = '';
+        switch (period) {
+            case 'today':
+                dateFilter = 'AND DATE(v.data_venda) = CURRENT_DATE';
+                break;
+            case 'week':
+                dateFilter = 'AND v.data_venda >= DATE_TRUNC(\'week\', CURRENT_DATE)';
+                break;
+            case 'month':
+            default:
+                dateFilter = 'AND EXTRACT(MONTH FROM v.data_venda) = EXTRACT(MONTH FROM CURRENT_DATE) AND EXTRACT(YEAR FROM v.data_venda) = EXTRACT(YEAR FROM CURRENT_DATE)';
+                break;
+        }
+
+        const query = `
+            SELECT 
+                p.nome,
+                SUM(iv.quantidade) as total_vendido,
+                SUM(iv.subtotal) as total_faturado
+            FROM itens_venda iv
+            JOIN produtos p ON iv.produto_id = p.id
+            JOIN vendas v ON iv.venda_id = v.id
+            WHERE 1=1 ${dateFilter}
+            GROUP BY p.id, p.nome
+            ORDER BY total_vendido DESC
+            LIMIT 5;
+        `;
+
+        const result = await db.query(query);
+        
+        const data = result.rows.map(row => ({
+            nome: row.nome,
+            total_vendido: parseInt(row.total_vendido || 0),
+            total_faturado: parseFloat(row.total_faturado || 0)
+        }));
+
+        res.json(data);
+    } catch (error) {
+        console.error('Erro ao buscar top produtos:', error);
+        res.status(500).json({ error: 'Erro ao carregar top produtos' });
+    }
+});
+
+// Dados de consumo por período
+app.get('/api/charts/consumption', async (req, res) => {
+    try {
+        const query = `
+            WITH date_series AS (
+                SELECT generate_series(
+                    CURRENT_DATE - INTERVAL '6 days',
+                    CURRENT_DATE,
+                    '1 day'
+                )::date AS date
+            ),
+            daily_consumption AS (
+                SELECT 
+                    DATE(data_criacao) as date,
+                    SUM(total) as total_consumo,
+                    COUNT(*) as num_itens
+                FROM consumo 
+                WHERE data_criacao >= CURRENT_DATE - INTERVAL '6 days'
+                GROUP BY DATE(data_criacao)
+            )
+            SELECT 
+                ds.date,
+                COALESCE(c.total_consumo, 0) as total_consumo,
+                COALESCE(c.num_itens, 0) as num_itens
+            FROM date_series ds
+            LEFT JOIN daily_consumption c ON ds.date = c.date
+            ORDER BY ds.date;
+        `;
+
+        const result = await db.query(query);
+        
+        const data = result.rows.map(row => ({
+            date: row.date,
+            total_consumo: parseFloat(row.total_consumo || 0),
+            num_itens: parseInt(row.num_itens || 0)
+        }));
+
+        res.json(data);
+    } catch (error) {
+        console.error('Erro ao buscar dados de consumo:', error);
+        res.status(500).json({ error: 'Erro ao carregar dados de consumo' });
+    }
+});
+
+// Status do estoque (produtos com baixo estoque)
+app.get('/api/charts/stock-status', async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                nome,
+                quantidade_estoque,
+                estoque_minimo,
+                CASE 
+                    WHEN quantidade_estoque <= 0 THEN 'Esgotado'
+                    WHEN quantidade_estoque <= estoque_minimo THEN 'Baixo'
+                    WHEN quantidade_estoque <= estoque_minimo * 2 THEN 'Médio'
+                    ELSE 'Alto'
+                END as status_estoque
+            FROM produtos
+            ORDER BY 
+                CASE 
+                    WHEN quantidade_estoque <= 0 THEN 1
+                    WHEN quantidade_estoque <= estoque_minimo THEN 2
+                    WHEN quantidade_estoque <= estoque_minimo * 2 THEN 3
+                    ELSE 4
+                END,
+                quantidade_estoque ASC
+            LIMIT 20;
+        `;
+
+        const result = await db.query(query);
+        
+        const data = result.rows.map(row => ({
+            nome: row.nome,
+            quantidade_estoque: parseInt(row.quantidade_estoque || 0),
+            estoque_minimo: parseInt(row.estoque_minimo || 0),
+            status_estoque: row.status_estoque
+        }));
+
+        res.json(data);
+    } catch (error) {
+        console.error('Erro ao buscar status do estoque:', error);
+        res.status(500).json({ error: 'Erro ao carregar status do estoque' });
     }
 });
 
