@@ -398,54 +398,6 @@ app.get('/api/charts/sales-period', async (req, res) => {
     }
 });
 
-// Top produtos mais vendidos
-app.get('/api/charts/top-products', async (req, res) => {
-    try {
-        const { period = 'month' } = req.query;
-        
-        let dateFilter = '';
-        switch (period) {
-            case 'today':
-                dateFilter = 'AND DATE(v.data_venda) = CURRENT_DATE';
-                break;
-            case 'week':
-                dateFilter = 'AND v.data_venda >= DATE_TRUNC(\'week\', CURRENT_DATE)';
-                break;
-            case 'month':
-            default:
-                dateFilter = 'AND EXTRACT(MONTH FROM v.data_venda) = EXTRACT(MONTH FROM CURRENT_DATE) AND EXTRACT(YEAR FROM v.data_venda) = EXTRACT(YEAR FROM CURRENT_DATE)';
-                break;
-        }
-
-        const query = `
-            SELECT 
-                p.nome,
-                SUM(iv.quantidade) as total_vendido,
-                SUM(iv.subtotal) as total_faturado
-            FROM itens_venda iv
-            JOIN produtos p ON iv.produto_id = p.id
-            JOIN vendas v ON iv.venda_id = v.id
-            WHERE 1=1 ${dateFilter}
-            GROUP BY p.id, p.nome
-            ORDER BY total_vendido DESC
-            LIMIT 5;
-        `;
-
-        const result = await db.query(query);
-        
-        const data = result.rows.map(row => ({
-            nome: row.nome,
-            total_vendido: parseInt(row.total_vendido || 0),
-            total_faturado: parseFloat(row.total_faturado || 0)
-        }));
-
-        res.json(data);
-    } catch (error) {
-        console.error('Erro ao buscar top produtos:', error);
-        res.status(500).json({ error: 'Erro ao carregar top produtos' });
-    }
-});
-
 // Dados de consumo por período
 app.get('/api/charts/consumption', async (req, res) => {
     try {
@@ -709,6 +661,78 @@ app.post('/api/vendas', async (req, res) => {
         res.status(500).json({ error: error.message || 'Erro ao processar venda' });
     } finally {
         client.release();
+    }
+});
+
+// Histórico de vendas
+app.get('/api/vendas/historico', async (req, res) => {
+    try {
+        const { periodo = 'hoje', status = 'todos' } = req.query;
+        
+        let whereClause = '1=1';
+        let params = [];
+        
+        // Filtro por período
+        switch (periodo) {
+            case 'hoje':
+                whereClause += ' AND DATE(v.data_venda) = CURRENT_DATE';
+                break;
+            case 'ontem':
+                whereClause += ' AND DATE(v.data_venda) = CURRENT_DATE - INTERVAL \'1 day\'';
+                break;
+            case 'semana':
+                whereClause += ' AND v.data_venda >= DATE_TRUNC(\'week\', CURRENT_DATE)';
+                break;
+            case 'mes':
+                whereClause += ' AND EXTRACT(MONTH FROM v.data_venda) = EXTRACT(MONTH FROM CURRENT_DATE) AND EXTRACT(YEAR FROM v.data_venda) = EXTRACT(YEAR FROM CURRENT_DATE)';
+                break;
+            case 'todos':
+                // Sem filtro adicional
+                break;
+        }
+        
+        // Filtro por status
+        if (status !== 'todos') {
+            if (status === 'pago') {
+                whereClause += ' AND (v.is_fiado = false OR (v.is_fiado = true AND v.pago = true))';
+            } else if (status === 'fiado') {
+                whereClause += ' AND v.is_fiado = true AND v.pago = false';
+            }
+        }
+        
+        const query = `
+            SELECT 
+                v.id,
+                v.total,
+                v.is_fiado,
+                v.pago,
+                v.data_venda,
+                c.nome as cliente_nome,
+                COUNT(iv.id) as total_itens,
+                ARRAY_AGG(
+                    json_build_object(
+                        'produto_nome', p.nome,
+                        'quantidade', iv.quantidade,
+                        'preco_unitario', iv.preco_unitario,
+                        'subtotal', iv.subtotal
+                    )
+                ) as itens
+            FROM vendas v
+            JOIN clientes c ON v.cliente_id = c.id
+            LEFT JOIN itens_venda iv ON v.id = iv.venda_id
+            LEFT JOIN produtos p ON iv.produto_id = p.id
+            WHERE ${whereClause}
+            GROUP BY v.id, v.total, v.is_fiado, v.pago, v.data_venda, c.nome
+            ORDER BY v.data_venda DESC
+            LIMIT 50
+        `;
+        
+        const result = await db.query(query, params);
+        res.json(result.rows);
+        
+    } catch (error) {
+        console.error('Erro ao buscar histórico de vendas:', error);
+        res.status(500).json({ error: 'Erro ao buscar histórico de vendas' });
     }
 });
 
