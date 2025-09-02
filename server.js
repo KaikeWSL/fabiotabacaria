@@ -1274,6 +1274,169 @@ app.delete('/api/consumo/:id', async (req, res) => {
     }
 });
 
+// ===== ROTAS DA SINUCA =====
+
+// Listar dados da sinuca
+app.get('/api/sinuca', async (req, res) => {
+    try {
+        const query = `
+            SELECT 
+                COALESCE(data, '{}') as data
+            FROM sinuca_data 
+            WHERE id = 1
+        `;
+
+        const result = await db.query(query);
+        
+        let sinucaData = {
+            fichasVendidas: 0,
+            faturamento: 0,
+            custoTotal: 0,
+            lucro: 0,
+            historico: [],
+            ultimoReset: new Date().toISOString()
+        };
+
+        if (result.rows.length > 0 && result.rows[0].data) {
+            sinucaData = { ...sinucaData, ...result.rows[0].data };
+        }
+
+        res.json({ success: true, data: sinucaData });
+    } catch (error) {
+        console.error('❌ Erro ao buscar dados da sinuca:', error);
+        
+        // Se a tabela não existe, criar e retornar dados padrão
+        try {
+            await ensureSinucaTableExists();
+            const defaultData = {
+                fichasVendidas: 0,
+                faturamento: 0,
+                custoTotal: 0,
+                lucro: 0,
+                historico: [],
+                ultimoReset: new Date().toISOString()
+            };
+            res.json({ success: true, data: defaultData });
+        } catch (createError) {
+            console.error('❌ Erro ao criar tabela sinuca:', createError);
+            res.status(500).json({ 
+                error: 'Erro ao carregar dados da sinuca',
+                details: error.message
+            });
+        }
+    }
+});
+
+// Atualizar dados da sinuca
+app.post('/api/sinuca', async (req, res) => {
+    try {
+        const { data } = req.body;
+
+        if (!data) {
+            return res.status(400).json({ error: 'Dados da sinuca são obrigatórios' });
+        }
+
+        // Garantir que a tabela existe
+        await ensureSinucaTableExists();
+
+        const query = `
+            INSERT INTO sinuca_data (id, data, updated_at)
+            VALUES (1, $1, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                data = $1,
+                updated_at = NOW()
+        `;
+
+        await db.query(query, [JSON.stringify(data)]);
+
+        res.json({
+            success: true,
+            message: 'Dados da sinuca atualizados com sucesso'
+        });
+    } catch (error) {
+        console.error('❌ Erro ao atualizar dados da sinuca:', error);
+        res.status(500).json({ 
+            error: 'Erro ao salvar dados da sinuca',
+            details: error.message
+        });
+    }
+});
+
+// Resetar dados da sinuca
+app.post('/api/sinuca/reset', async (req, res) => {
+    try {
+        const resetData = {
+            fichasVendidas: 0,
+            faturamento: 0,
+            custoTotal: 0,
+            lucro: 0,
+            historico: [],
+            ultimoReset: new Date().toISOString()
+        };
+
+        // Garantir que a tabela existe
+        await ensureSinucaTableExists();
+
+        const query = `
+            INSERT INTO sinuca_data (id, data, updated_at)
+            VALUES (1, $1, NOW())
+            ON CONFLICT (id) DO UPDATE SET
+                data = $1,
+                updated_at = NOW()
+        `;
+
+        await db.query(query, [JSON.stringify(resetData)]);
+
+        res.json({
+            success: true,
+            message: 'Dados da sinuca resetados com sucesso',
+            data: resetData
+        });
+    } catch (error) {
+        console.error('❌ Erro ao resetar dados da sinuca:', error);
+        res.status(500).json({ 
+            error: 'Erro ao resetar dados da sinuca',
+            details: error.message
+        });
+    }
+});
+
+// Função para garantir que a tabela sinuca_data existe
+async function ensureSinucaTableExists() {
+    try {
+        const checkTableQuery = `
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'sinuca_data'
+            );
+        `;
+        
+        const result = await db.query(checkTableQuery);
+        const tableExists = result.rows[0].exists;
+        
+        if (!tableExists) {
+            console.log('📋 Criando tabela sinuca_data...');
+            
+            const createTableQuery = `
+                CREATE TABLE sinuca_data (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    data JSONB NOT NULL DEFAULT '{}',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    CONSTRAINT single_row CHECK (id = 1)
+                );
+                
+                INSERT INTO sinuca_data (id, data) VALUES (1, '{}');
+            `;
+            
+            await db.query(createTableQuery);
+            console.log('✅ Tabela sinuca_data criada com sucesso!');
+        }
+    } catch (error) {
+        console.error('❌ Erro ao verificar/criar tabela sinuca_data:', error);
+        throw error;
+    }
+}
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ 
