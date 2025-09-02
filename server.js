@@ -1437,6 +1437,243 @@ async function ensureSinucaTableExists() {
     }
 }
 
+// ===== ENDPOINTS DE EXCLUSÃO =====
+
+// Excluir produto
+app.delete('/api/produtos/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Verificar se o produto existe
+        const produtoCheck = await db.query('SELECT id, nome FROM produtos WHERE id = $1', [id]);
+        if (produtoCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Produto não encontrado' });
+        }
+        
+        const produto = produtoCheck.rows[0];
+        
+        // Verificar se existem vendas com este produto
+        const vendasCheck = await db.query('SELECT COUNT(*) as count FROM itens_venda WHERE produto_id = $1', [id]);
+        const hasVendas = parseInt(vendasCheck.rows[0].count) > 0;
+        
+        if (hasVendas) {
+            return res.status(400).json({ 
+                error: 'Não é possível excluir o produto pois existem vendas associadas a ele.',
+                details: 'Para manter a integridade dos dados históricos, produtos com vendas não podem ser excluídos.'
+            });
+        }
+        
+        // Excluir produto
+        await db.query('DELETE FROM produtos WHERE id = $1', [id]);
+        
+        console.log(`✅ Produto excluído: ${produto.nome} (ID: ${id})`);
+        res.json({ 
+            success: true, 
+            message: `Produto "${produto.nome}" excluído com sucesso`,
+            produto: produto
+        });
+        
+    } catch (error) {
+        console.error('Erro ao excluir produto:', error);
+        res.status(500).json({ error: 'Erro ao excluir produto' });
+    }
+});
+
+// Excluir cliente
+app.delete('/api/clientes/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Verificar se o cliente existe
+        const clienteCheck = await db.query('SELECT id, nome FROM clientes WHERE id = $1', [id]);
+        if (clienteCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Cliente não encontrado' });
+        }
+        
+        const cliente = clienteCheck.rows[0];
+        
+        // Verificar se existem vendas pendentes (fiado não pago)
+        const fiadoPendente = await db.query(
+            'SELECT COUNT(*) as count FROM vendas WHERE cliente_id = $1 AND is_fiado = true AND pago = false', 
+            [id]
+        );
+        const hasFiadoPendente = parseInt(fiadoPendente.rows[0].count) > 0;
+        
+        if (hasFiadoPendente) {
+            return res.status(400).json({ 
+                error: 'Não é possível excluir o cliente pois possui dívidas pendentes.',
+                details: 'Quite todas as dívidas ou cancele-as antes de excluir o cliente.'
+            });
+        }
+        
+        // Verificar se existem vendas históricas
+        const vendasCheck = await db.query('SELECT COUNT(*) as count FROM vendas WHERE cliente_id = $1', [id]);
+        const hasVendas = parseInt(vendasCheck.rows[0].count) > 0;
+        
+        if (hasVendas) {
+            return res.status(400).json({ 
+                error: 'Não é possível excluir o cliente pois existem vendas associadas.',
+                details: 'Para manter a integridade dos dados históricos, clientes com vendas não podem ser excluídos.'
+            });
+        }
+        
+        // Excluir cliente
+        await db.query('DELETE FROM clientes WHERE id = $1', [id]);
+        
+        console.log(`✅ Cliente excluído: ${cliente.nome} (ID: ${id})`);
+        res.json({ 
+            success: true, 
+            message: `Cliente "${cliente.nome}" excluído com sucesso`,
+            cliente: cliente
+        });
+        
+    } catch (error) {
+        console.error('Erro ao excluir cliente:', error);
+        res.status(500).json({ error: 'Erro ao excluir cliente' });
+    }
+});
+
+// Excluir venda (fiado)
+app.delete('/api/vendas/:id', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Verificar se a venda existe
+        const vendaCheck = await db.query(`
+            SELECT v.id, v.total, v.is_fiado, v.pago, c.nome as cliente_nome
+            FROM vendas v
+            JOIN clientes c ON v.cliente_id = c.id
+            WHERE v.id = $1
+        `, [id]);
+        
+        if (vendaCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Venda não encontrada' });
+        }
+        
+        const venda = vendaCheck.rows[0];
+        
+        // Verificar se é uma venda já paga (só permitir exclusão de fiado pendente)
+        if (venda.is_fiado && venda.pago) {
+            return res.status(400).json({ 
+                error: 'Não é possível excluir venda fiado já quitada.',
+                details: 'Para manter a integridade dos dados, vendas pagas não podem ser excluídas.'
+            });
+        }
+        
+        // Verificar se é venda à vista (mais cuidadoso)
+        if (!venda.is_fiado) {
+            return res.status(400).json({ 
+                error: 'Não é possível excluir venda à vista.',
+                details: 'Apenas vendas fiado pendentes podem ser excluídas.'
+            });
+        }
+        
+        // Iniciar transação
+        const client = await db.pool.connect();
+        try {
+            await client.query('BEGIN');
+            
+            // Excluir itens da venda primeiro
+            await client.query('DELETE FROM itens_venda WHERE venda_id = $1', [id]);
+            
+            // Excluir a venda
+            await client.query('DELETE FROM vendas WHERE id = $1', [id]);
+            
+            await client.query('COMMIT');
+            
+            console.log(`✅ Venda fiado excluída: ${venda.cliente_nome} - ${venda.total} (ID: ${id})`);
+            res.json({ 
+                success: true, 
+                message: `Venda fiado de "${venda.cliente_nome}" excluída com sucesso`,
+                venda: venda
+            });
+            
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+        
+    } catch (error) {
+        console.error('Erro ao excluir venda:', error);
+        res.status(500).json({ error: 'Erro ao excluir venda' });
+    }
+});
+
+// Cancelar todas as dívidas de um cliente
+app.post('/api/fiados/:clienteId/clear', async (req, res) => {
+    try {
+        const { clienteId } = req.params;
+        
+        // Verificar se o cliente existe
+        const clienteCheck = await db.query('SELECT id, nome FROM clientes WHERE id = $1', [clienteId]);
+        if (clienteCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Cliente não encontrado' });
+        }
+        
+        const cliente = clienteCheck.rows[0];
+        
+        // Buscar dívidas pendentes
+        const dividas = await db.query(`
+            SELECT id, total FROM vendas 
+            WHERE cliente_id = $1 AND is_fiado = true AND pago = false
+        `, [clienteId]);
+        
+        if (dividas.rows.length === 0) {
+            return res.json({ 
+                success: true, 
+                message: `Cliente "${cliente.nome}" não possui dívidas pendentes`,
+                cancelled: 0
+            });
+        }
+        
+        const totalCancelado = dividas.rows.reduce((sum, d) => sum + parseFloat(d.total), 0);
+        
+        // Iniciar transação
+        const client = await db.pool.connect();
+        try {
+            await client.query('BEGIN');
+            
+            // Excluir itens das vendas primeiro
+            const vendaIds = dividas.rows.map(d => d.id);
+            if (vendaIds.length > 0) {
+                await client.query(
+                    `DELETE FROM itens_venda WHERE venda_id = ANY($1)`, 
+                    [vendaIds]
+                );
+                
+                // Excluir as vendas
+                await client.query(
+                    `DELETE FROM vendas WHERE cliente_id = $1 AND is_fiado = true AND pago = false`, 
+                    [clienteId]
+                );
+            }
+            
+            await client.query('COMMIT');
+            
+            console.log(`✅ Dívidas canceladas: ${cliente.nome} - Total: R$ ${totalCancelado.toFixed(2)} (${dividas.rows.length} vendas)`);
+            res.json({ 
+                success: true, 
+                message: `Todas as dívidas de "${cliente.nome}" foram canceladas`,
+                cliente: cliente,
+                cancelled: dividas.rows.length,
+                totalCancelado: totalCancelado
+            });
+            
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
+        }
+        
+    } catch (error) {
+        console.error('Erro ao cancelar dívidas:', error);
+        res.status(500).json({ error: 'Erro ao cancelar dívidas do cliente' });
+    }
+});
+
 // Health check endpoint
 app.get('/api/health', (req, res) => {
     res.json({ 
