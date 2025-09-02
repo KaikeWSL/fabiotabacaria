@@ -1466,6 +1466,9 @@ app.delete('/api/produtos/:id', async (req, res) => {
         // Excluir produto
         await db.query('DELETE FROM produtos WHERE id = $1', [id]);
         
+        // Limpar cache após exclusão
+        cache.clear();
+        
         console.log(`✅ Produto excluído: ${produto.nome} (ID: ${id})`);
         res.json({ 
             success: true, 
@@ -1519,6 +1522,9 @@ app.delete('/api/clientes/:id', async (req, res) => {
         
         // Excluir cliente
         await db.query('DELETE FROM clientes WHERE id = $1', [id]);
+        
+        // Limpar cache após exclusão
+        cache.clear();
         
         console.log(`✅ Cliente excluído: ${cliente.nome} (ID: ${id})`);
         res.json({ 
@@ -1580,6 +1586,10 @@ app.delete('/api/vendas/:id', async (req, res) => {
             await client.query('DELETE FROM vendas WHERE id = $1', [id]);
             
             await client.query('COMMIT');
+            
+            // Limpar cache após exclusão
+            cache.clear();
+            console.log('💾 Cache do backend limpo após exclusão de venda fiado');
             
             console.log(`✅ Venda fiado excluída: ${venda.cliente_nome} - ${venda.total} (ID: ${id})`);
             res.json({ 
@@ -1651,6 +1661,9 @@ app.post('/api/fiados/:clienteId/clear', async (req, res) => {
             }
             
             await client.query('COMMIT');
+            
+            // Limpar cache após cancelamento
+            cache.clear();
             
             console.log(`✅ Dívidas canceladas: ${cliente.nome} - Total: R$ ${totalCancelado.toFixed(2)} (${dividas.rows.length} vendas)`);
             res.json({ 
