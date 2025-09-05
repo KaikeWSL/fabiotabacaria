@@ -235,17 +235,20 @@ app.get('/api/produtos', async (req, res) => {
         }
 
         const result = await db.query(`
-            SELECT id, nome, preco_custo, preco_venda, preco_fiado, 
-                   quantidade_estoque, estoque_minimo 
-            FROM produtos 
-            ORDER BY nome
+            SELECT p.id, p.nome, p.preco_custo, p.preco_venda, p.preco_fiado, 
+                   p.quantidade_estoque, p.estoque_minimo,
+                   CASE WHEN pf.produto_id IS NOT NULL THEN true ELSE false END as is_favorito
+            FROM produtos p
+            LEFT JOIN produtos_favoritos pf ON p.id = pf.produto_id
+            ORDER BY pf.produto_id IS NOT NULL DESC, p.nome
         `);
 
         const produtos = result.rows.map(produto => ({
             ...produto,
             preco_custo: parseFloat(produto.preco_custo),
             preco_venda: parseFloat(produto.preco_venda),
-            preco_fiado: parseFloat(produto.preco_fiado)
+            preco_fiado: parseFloat(produto.preco_fiado),
+            is_favorito: produto.is_favorito
         }));
 
         setCache(cacheKey, produtos);
@@ -1479,6 +1482,120 @@ app.delete('/api/produtos/:id', async (req, res) => {
     } catch (error) {
         console.error('Erro ao excluir produto:', error);
         res.status(500).json({ error: 'Erro ao excluir produto' });
+    }
+});
+
+// ===== PRODUTOS FAVORITOS =====
+
+// Listar produtos favoritos
+app.get('/api/produtos/favoritos', async (req, res) => {
+    try {
+        const result = await db.query(`
+            SELECT p.id, p.nome, p.preco_custo, p.preco_venda, p.preco_fiado, 
+                   p.quantidade_estoque, p.estoque_minimo, pf.created_at as favorito_desde
+            FROM produtos p
+            INNER JOIN produtos_favoritos pf ON p.id = pf.produto_id
+            ORDER BY pf.created_at DESC
+        `);
+
+        const favoritos = result.rows.map(produto => ({
+            ...produto,
+            preco_custo: parseFloat(produto.preco_custo),
+            preco_venda: parseFloat(produto.preco_venda),
+            preco_fiado: parseFloat(produto.preco_fiado),
+            is_favorito: true
+        }));
+
+        res.json(favoritos);
+    } catch (error) {
+        console.error('Erro ao listar produtos favoritos:', error);
+        res.status(500).json({ error: 'Erro ao carregar produtos favoritos' });
+    }
+});
+
+// Adicionar produto aos favoritos
+app.post('/api/produtos/:id/favorito', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Verificar se o produto existe
+        const produtoCheck = await db.query('SELECT id, nome FROM produtos WHERE id = $1', [id]);
+        if (produtoCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Produto não encontrado' });
+        }
+        
+        const produto = produtoCheck.rows[0];
+        
+        // Verificar se já está nos favoritos
+        const favoritoCheck = await db.query('SELECT id FROM produtos_favoritos WHERE produto_id = $1', [id]);
+        if (favoritoCheck.rows.length > 0) {
+            return res.status(400).json({ error: 'Produto já está nos favoritos' });
+        }
+        
+        // Adicionar aos favoritos
+        await db.query('INSERT INTO produtos_favoritos (produto_id) VALUES ($1)', [id]);
+        
+        console.log(`⭐ Produto adicionado aos favoritos: ${produto.nome} (ID: ${id})`);
+        res.json({ 
+            success: true, 
+            message: `Produto "${produto.nome}" adicionado aos favoritos`,
+            produto: produto
+        });
+        
+    } catch (error) {
+        console.error('Erro ao adicionar produto aos favoritos:', error);
+        res.status(500).json({ error: 'Erro ao adicionar produto aos favoritos' });
+    }
+});
+
+// Remover produto dos favoritos
+app.delete('/api/produtos/:id/favorito', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Verificar se o produto existe
+        const produtoCheck = await db.query('SELECT id, nome FROM produtos WHERE id = $1', [id]);
+        if (produtoCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Produto não encontrado' });
+        }
+        
+        const produto = produtoCheck.rows[0];
+        
+        // Verificar se está nos favoritos
+        const favoritoCheck = await db.query('SELECT id FROM produtos_favoritos WHERE produto_id = $1', [id]);
+        if (favoritoCheck.rows.length === 0) {
+            return res.status(404).json({ error: 'Produto não está nos favoritos' });
+        }
+        
+        // Remover dos favoritos
+        await db.query('DELETE FROM produtos_favoritos WHERE produto_id = $1', [id]);
+        
+        console.log(`💫 Produto removido dos favoritos: ${produto.nome} (ID: ${id})`);
+        res.json({ 
+            success: true, 
+            message: `Produto "${produto.nome}" removido dos favoritos`,
+            produto: produto
+        });
+        
+    } catch (error) {
+        console.error('Erro ao remover produto dos favoritos:', error);
+        res.status(500).json({ error: 'Erro ao remover produto dos favoritos' });
+    }
+});
+
+// Verificar se produto é favorito
+app.get('/api/produtos/:id/favorito', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const result = await db.query('SELECT id FROM produtos_favoritos WHERE produto_id = $1', [id]);
+        const isFavorito = result.rows.length > 0;
+        
+        res.json({ is_favorito: isFavorito });
+        
+    } catch (error) {
+        console.error('Erro ao verificar se produto é favorito:', error);
+        res.status(500).json({ error: 'Erro ao verificar status de favorito' });
     }
 });
 
