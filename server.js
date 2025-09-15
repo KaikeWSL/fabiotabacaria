@@ -175,23 +175,6 @@ app.get('/api/dashboard', async (req, res) => {
                     SUM(CASE WHEN is_fiado = true AND pago = false THEN total ELSE 0 END) as total_fiado
                 FROM vendas
             ),
-            lucro_stats AS (
-                SELECT 
-                    -- Lucro hoje
-                    COALESCE(SUM(CASE WHEN DATE(v.data_venda) = CURRENT_DATE 
-                                 THEN iv.quantidade * (iv.preco_unitario - p.preco_custo) ELSE 0 END), 0) as lucro_hoje,
-                    -- Lucro do mês
-                    COALESCE(SUM(CASE WHEN EXTRACT(MONTH FROM v.data_venda) = EXTRACT(MONTH FROM CURRENT_DATE)
-                                      AND EXTRACT(YEAR FROM v.data_venda) = EXTRACT(YEAR FROM CURRENT_DATE)
-                                 THEN iv.quantidade * (iv.preco_unitario - p.preco_custo) ELSE 0 END), 0) as lucro_mes,
-                    -- Lucro mês passado
-                    COALESCE(SUM(CASE WHEN EXTRACT(MONTH FROM v.data_venda) = EXTRACT(MONTH FROM CURRENT_DATE - INTERVAL '1 month')
-                                      AND EXTRACT(YEAR FROM v.data_venda) = EXTRACT(YEAR FROM CURRENT_DATE - INTERVAL '1 month')
-                                 THEN iv.quantidade * (iv.preco_unitario - p.preco_custo) ELSE 0 END), 0) as lucro_mes_passado
-                FROM vendas v
-                JOIN itens_venda iv ON v.id = iv.venda_id
-                JOIN produtos p ON iv.produto_id = p.id
-            ),
             contadores AS (
                 SELECT 
                     (SELECT COUNT(*) FROM produtos WHERE quantidade_estoque <= estoque_minimo) as estoque_baixo,
@@ -199,8 +182,8 @@ app.get('/api/dashboard', async (req, res) => {
                     (SELECT COUNT(*) FROM produtos) as total_produtos,
                     (SELECT COALESCE(SUM(total), 0) FROM consumo WHERE DATE(data_criacao) = CURRENT_DATE) as consumo_hoje
             )
-            SELECT vs.*, ls.*, c.*
-            FROM vendas_stats vs, lucro_stats ls, contadores c;
+            SELECT vs.*, c.*
+            FROM vendas_stats vs, contadores c;
         `;
 
         const result = await db.query(dashboardQuery);
@@ -208,32 +191,14 @@ app.get('/api/dashboard', async (req, res) => {
 
         const vendasMesVal = parseFloat(data.vendas_mes || 0);
         const vendasMesPassadoVal = parseFloat(data.vendas_mes_passado || 0);
-        const lucroMesVal = parseFloat(data.lucro_mes || 0);
-        const lucroMesPassadoVal = parseFloat(data.lucro_mes_passado || 0);
         
-        // Calcular crescimento de vendas
-        let crescimentoVendas = 0;
+        // Calcular crescimento
+        let crescimento = 0;
         if (vendasMesPassadoVal > 0) {
-            crescimentoVendas = ((vendasMesVal - vendasMesPassadoVal) / vendasMesPassadoVal) * 100;
+            crescimento = ((vendasMesVal - vendasMesPassadoVal) / vendasMesPassadoVal) * 100;
         } else if (vendasMesVal > 0) {
-            crescimentoVendas = 100;
+            crescimento = 100;
         }
-
-        // Calcular crescimento de lucro
-        let crescimentoLucro = 0;
-        if (lucroMesPassadoVal > 0) {
-            crescimentoLucro = ((lucroMesVal - lucroMesPassadoVal) / lucroMesPassadoVal) * 100;
-        } else if (lucroMesVal > 0) {
-            crescimentoLucro = 100;
-        }
-
-        // Calcular margem de lucro
-        const margemLucroHoje = parseFloat(data.vendas_hoje || 0) > 0 
-            ? ((parseFloat(data.lucro_hoje || 0) / parseFloat(data.vendas_hoje || 0)) * 100)
-            : 0;
-        const margemLucroMes = vendasMesVal > 0 
-            ? ((lucroMesVal / vendasMesVal) * 100)
-            : 0;
 
         const dashboardData = {
             vendas_hoje: parseFloat(data.vendas_hoje || 0),
@@ -244,17 +209,11 @@ app.get('/api/dashboard', async (req, res) => {
             fiado_hoje: parseFloat(data.fiado_hoje || 0),
             fiado_pago_hoje: parseFloat(data.fiado_pago_hoje || 0),
             total_fiado: parseFloat(data.total_fiado || 0),
-            lucro_hoje: parseFloat(data.lucro_hoje || 0),
-            lucro_mes: lucroMesVal,
-            lucro_mes_passado: lucroMesPassadoVal,
-            margem_lucro_hoje: parseFloat(margemLucroHoje.toFixed(2)),
-            margem_lucro_mes: parseFloat(margemLucroMes.toFixed(2)),
             estoque_baixo: parseInt(data.estoque_baixo || 0),
             total_clientes: parseInt(data.total_clientes || 0),
             total_produtos: parseInt(data.total_produtos || 0),
             consumo_hoje: parseFloat(data.consumo_hoje || 0),
-            crescimento_vendas_mes: parseFloat(crescimentoVendas.toFixed(1)),
-            crescimento_lucro_mes: parseFloat(crescimentoLucro.toFixed(1))
+            crescimento_mes: parseFloat(crescimento.toFixed(1))
         };
 
         setCache(cacheKey, dashboardData);
@@ -264,86 +223,6 @@ app.get('/api/dashboard', async (req, res) => {
         console.error('Erro no dashboard:', error);
         res.status(500).json({ error: 'Erro ao carregar dashboard' });
     }
-});
-
-// Endpoint para calcular lucro por período
-app.get('/api/lucro/periodo', async (req, res) => {
-    try {
-        const { periodo = 'mes' } = req.query;
-        
-        let whereClause = '1=1';
-        
-        // Filtro por período
-        switch (periodo) {
-            case 'hoje':
-                whereClause += ' AND DATE(v.data_venda) = CURRENT_DATE';
-                break;
-            case 'ontem':
-                whereClause += ' AND DATE(v.data_venda) = CURRENT_DATE - INTERVAL \'1 day\'';
-                break;
-            case 'semana':
-                whereClause += ' AND v.data_venda >= DATE_TRUNC(\'week\', CURRENT_DATE)';
-                break;
-            case 'mes':
-                whereClause += ' AND EXTRACT(MONTH FROM v.data_venda) = EXTRACT(MONTH FROM CURRENT_DATE) AND EXTRACT(YEAR FROM v.data_venda) = EXTRACT(YEAR FROM CURRENT_DATE)';
-                break;
-            case 'mes_passado':
-                whereClause += ' AND EXTRACT(MONTH FROM v.data_venda) = EXTRACT(MONTH FROM CURRENT_DATE - INTERVAL \'1 month\') AND EXTRACT(YEAR FROM v.data_venda) = EXTRACT(YEAR FROM CURRENT_DATE - INTERVAL \'1 month\')';
-                break;
-            case 'todos':
-                // Sem filtro adicional
-                break;
-        }
-
-        const lucroQuery = `
-            SELECT 
-                SUM(iv.quantidade * iv.preco_unitario) as receita_total,
-                SUM(iv.quantidade * p.preco_custo) as custo_total,
-                SUM(iv.quantidade * (iv.preco_unitario - p.preco_custo)) as lucro_bruto,
-                COUNT(DISTINCT v.id) as total_vendas,
-                COUNT(iv.id) as total_itens
-            FROM vendas v
-            JOIN itens_venda iv ON v.id = iv.venda_id
-            JOIN produtos p ON iv.produto_id = p.id
-            WHERE ${whereClause}
-        `;
-
-        const result = await db.query(lucroQuery);
-        const data = result.rows[0];
-
-        const receita = parseFloat(data.receita_total || 0);
-        const custo = parseFloat(data.custo_total || 0);
-        const lucro = parseFloat(data.lucro_bruto || 0);
-        const totalVendas = parseInt(data.total_vendas || 0);
-        const totalItens = parseInt(data.total_itens || 0);
-
-        // Calcular margem de lucro
-        const margemLucro = receita > 0 ? ((lucro / receita) * 100) : 0;
-
-        res.json({
-            periodo: periodo,
-            receita_total: receita,
-            custo_total: custo,
-            lucro_bruto: lucro,
-            margem_lucro: parseFloat(margemLucro.toFixed(2)),
-            total_vendas: totalVendas,
-            total_itens: totalItens,
-            lucro_por_venda: totalVendas > 0 ? parseFloat((lucro / totalVendas).toFixed(2)) : 0
-        });
-
-    } catch (error) {
-        console.error('Erro ao calcular lucro por período:', error);
-        res.status(500).json({ error: 'Erro ao calcular lucro' });
-    }
-});
-
-// Endpoint de teste para verificar se o servidor está funcionando
-app.get('/api/health', (req, res) => {
-    res.json({ 
-        status: 'ok', 
-        message: 'Servidor funcionando corretamente',
-        timestamp: new Date().toISOString()
-    });
 });
 
 // Produtos com cache
@@ -924,11 +803,11 @@ app.get('/api/fiados/cliente/:id', async (req, res) => {
             pago: venda.pago,
             cliente_nome: venda.cliente_nome,
             cliente_id: venda.cliente_id,
-            itens: venda.itens ? venda.itens.map(item => ({
+            itens: venda.itens.map(item => ({
                 quantidade: item.quantidade,
                 preco_unitario: parseFloat(item.preco_unitario),
                 produto_nome: item.produto_nome
-            })) : []
+            }))
         }));
 
         res.json(vendasDetalhadas);
@@ -973,77 +852,6 @@ app.post('/api/fiados/pay/:vendaId', async (req, res) => {
     }
 });
 
-// Versão simplificada do pagamento parcial por venda (sem tabela pagamentos_fiado)
-app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
-    try {
-        const { vendaId } = req.params;
-        const { amount } = req.body;
-
-        if (!amount || amount <= 0) {
-            return res.status(400).json({ error: 'Valor de pagamento inválido' });
-        }
-
-        // Verificar se a venda existe e se é fiado não pago
-        const checkResult = await db.query(`
-            SELECT id, total, pago, cliente_id FROM vendas 
-            WHERE id = $1 AND is_fiado = true
-        `, [vendaId]);
-
-        if (checkResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Venda não encontrada' });
-        }
-
-        if (checkResult.rows[0].pago) {
-            return res.status(400).json({ error: 'Venda já está paga' });
-        }
-
-        const venda = checkResult.rows[0];
-        const vendaTotal = parseFloat(venda.total);
-        const valorPagamento = parseFloat(amount);
-
-        if (valorPagamento >= vendaTotal) {
-            // Pagamento completo - quitar a venda
-            await db.query(`
-                UPDATE vendas 
-                SET pago = true, data_pagamento = CURRENT_TIMESTAMP
-                WHERE id = $1
-            `, [vendaId]);
-
-            // Limpar cache
-            cache.delete('fiados');
-            cache.delete('dashboard');
-
-            res.json({
-                success: true,
-                message: 'Venda quitada totalmente',
-                valor_pago: valorPagamento,
-                total_venda: vendaTotal,
-                valor_excedente: valorPagamento > vendaTotal ? valorPagamento - vendaTotal : 0,
-                tipo_pagamento: 'quitacao_total'
-            });
-        } else {
-            // Pagamento parcial - na versão simplificada não implementamos pagamentos parciais
-            // individuais, apenas quitação total
-            res.status(400).json({
-                error: 'Pagamento parcial não disponível nesta versão',
-                message: `Valor mínimo para quitar esta venda: R$ ${vendaTotal.toFixed(2)}`,
-                valor_necessario: vendaTotal,
-                valor_recebido: valorPagamento,
-                diferenca: vendaTotal - valorPagamento
-            });
-        }
-    } catch (error) {
-        console.error('❌ Erro ao registrar pagamento:', error);
-        res.status(500).json({ 
-            error: 'Erro ao processar pagamento',
-            details: error.message
-        });
-    }
-});
-
-// TEMPORARIAMENTE DESABILITADO - endpoint de pagamento parcial que usa tabela pagamentos_fiado
-// que não existe em produção. Será reabilitado após migração da base de dados
-/*
 // Pagamento parcial otimizado
 app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
     try {
@@ -1054,9 +862,9 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
             return res.status(400).json({ error: 'Valor de pagamento inválido' });
         }
 
-        // Verificar se a venda existe e se é fiado não pago
+        // Query com RETURNING para evitar múltiplas queries
         const checkResult = await db.query(`
-            SELECT id, total, pago, cliente_id FROM vendas 
+            SELECT id, total, pago FROM vendas 
             WHERE id = $1 AND is_fiado = true
         `, [vendaId]);
 
@@ -1068,45 +876,21 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
             return res.status(400).json({ error: 'Venda já está paga' });
         }
 
-        const venda = checkResult.rows[0];
-        const vendaTotal = parseFloat(venda.total);
+        const vendaTotal = parseFloat(checkResult.rows[0].total);
         const valorPagamento = parseFloat(amount);
 
         if (valorPagamento > vendaTotal) {
             return res.status(400).json({ error: 'Valor do pagamento não pode ser maior que o total da venda' });
         }
 
-        // Verificar pagamentos já realizados para esta venda
-        const pagamentosResult = await db.query(`
-            SELECT COALESCE(SUM(valor_pagamento), 0) as total_pago 
-            FROM pagamentos_fiado 
-            WHERE venda_id = $1
-        `, [vendaId]);
-
-        const totalJaPago = parseFloat(pagamentosResult.rows[0].total_pago || 0);
-        const saldoDevedor = vendaTotal - totalJaPago;
-
-        if (valorPagamento > saldoDevedor) {
-            return res.status(400).json({ 
-                error: `Valor excede o saldo devedor de R$ ${saldoDevedor.toFixed(2)}` 
-            });
-        }
-
-        // Registrar o pagamento na tabela de pagamentos
-        const pagamentoResult = await db.query(`
-            INSERT INTO pagamentos_fiado (venda_id, cliente_id, valor_pagamento, data_pagamento)
-            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
-            RETURNING id, valor_pagamento, data_pagamento
-        `, [vendaId, venda.cliente_id, valorPagamento]);
-
-        const novoSaldoDevedor = saldoDevedor - valorPagamento;
-
-        // Se o pagamento quitou totalmente a venda, marcar como paga
-        if (novoSaldoDevedor === 0) {
-            await db.query(`
+        let result;
+        if (valorPagamento === vendaTotal) {
+            // Pagamento total
+            result = await db.query(`
                 UPDATE vendas 
-                SET pago = true, data_pagamento = CURRENT_TIMESTAMP
+                SET pago = true
                 WHERE id = $1
+                RETURNING id, total
             `, [vendaId]);
 
             // Limpar cache
@@ -1115,15 +899,20 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
 
             res.json({
                 success: true,
-                message: 'Venda quitada totalmente',
-                pagamento: pagamentoResult.rows[0],
-                valor_pago: valorPagamento,
-                total_venda: vendaTotal,
-                saldo_restante: 0,
-                tipo_pagamento: 'quitacao_total'
+                message: 'Pagamento total registrado com sucesso',
+                venda_quitada: result.rows[0],
+                tipo_pagamento: 'total'
             });
         } else {
             // Pagamento parcial
+            const novoTotal = vendaTotal - valorPagamento;
+            result = await db.query(`
+                UPDATE vendas 
+                SET total = $1
+                WHERE id = $2
+                RETURNING id, total
+            `, [novoTotal, vendaId]);
+
             // Limpar cache
             cache.delete('fiados');
             cache.delete('dashboard');
@@ -1131,11 +920,9 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
             res.json({
                 success: true,
                 message: 'Pagamento parcial registrado com sucesso',
-                pagamento: pagamentoResult.rows[0],
+                venda_atualizada: result.rows[0],
                 valor_pago: valorPagamento,
-                total_venda: vendaTotal,
-                total_ja_pago: totalJaPago + valorPagamento,
-                saldo_restante: novoSaldoDevedor,
+                saldo_restante: novoTotal,
                 tipo_pagamento: 'parcial'
             });
         }
@@ -1147,88 +934,7 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
         });
     }
 });
-*/
 
-// Versão simplificada do pagamento parcial por cliente (sem tabela pagamentos_fiado)
-app.post('/api/fiados/pay-partial-client/:clienteId', async (req, res) => {
-    try {
-        const { clienteId } = req.params;
-        const { amount } = req.body;
-
-        if (!amount || amount <= 0) {
-            return res.status(400).json({ error: 'Valor de pagamento inválido' });
-        }
-
-        // Buscar vendas fiado em aberto do cliente, ordenadas pela mais antiga
-        const vendasResult = await db.query(`
-            SELECT id, total, data_venda
-            FROM vendas 
-            WHERE cliente_id = $1 AND is_fiado = true AND pago = false
-            ORDER BY data_venda ASC
-        `, [clienteId]);
-
-        if (vendasResult.rows.length === 0) {
-            return res.status(404).json({ error: 'Nenhuma venda fiado em aberto encontrada para este cliente' });
-        }
-
-        let valorRestante = parseFloat(amount);
-        const vendasQuitadas = [];
-        const vendasAtualizadas = [];
-
-        // Processar pagamento - quitar vendas integralmente na ordem cronológica
-        for (const venda of vendasResult.rows) {
-            const valorVenda = parseFloat(venda.total);
-            
-            if (valorRestante >= valorVenda) {
-                // Quitar esta venda completamente
-                await db.query(`
-                    UPDATE vendas 
-                    SET pago = true, data_pagamento = CURRENT_TIMESTAMP
-                    WHERE id = $1
-                `, [venda.id]);
-
-                vendasQuitadas.push({
-                    id: venda.id,
-                    valor: valorVenda,
-                    data_venda: venda.data_venda
-                });
-
-                valorRestante -= valorVenda;
-            } else {
-                // Valor insuficiente para quitar esta venda
-                // Não implementamos pagamento parcial individual nesta versão simplificada
-                break;
-            }
-
-            if (valorRestante <= 0) break;
-        }
-
-        // Limpar cache
-        cache.delete('fiados');
-        cache.delete('dashboard');
-
-        res.json({
-            success: true,
-            message: `Pagamento de R$ ${amount} processado com sucesso`,
-            valor_pago: parseFloat(amount),
-            valor_utilizado: parseFloat(amount) - valorRestante,
-            valor_restante: valorRestante,
-            vendas_quitadas: vendasQuitadas,
-            total_vendas_quitadas: vendasQuitadas.length,
-            observacao: valorRestante > 0 ? 'Valor restante não foi utilizado - sem vendas suficientes para quitar' : 'Valor totalmente utilizado'
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao registrar pagamento parcial do cliente:', error);
-        res.status(500).json({ 
-            error: 'Erro ao processar pagamento parcial',
-            details: error.message
-        });
-    }
-});
-
-// TEMPORARIAMENTE DESABILITADO - endpoint de pagamento parcial por cliente
-/*
 // Pagamento parcial do cliente otimizado
 app.post('/api/fiados/pay-partial-client/:clienteId', async (req, res) => {
     const client = await db.getClient();
@@ -1336,7 +1042,6 @@ app.post('/api/fiados/pay-partial-client/:clienteId', async (req, res) => {
         client.release();
     }
 });
-*/
 
 // Quitar todas as vendas do cliente otimizado
 app.post('/api/fiados/payall/:clienteId', async (req, res) => {
@@ -2121,148 +1826,6 @@ app.use((error, req, res, next) => {
         message: process.env.NODE_ENV === 'development' ? error.message : 'Erro interno'
     });
 });
-
-// ===== ROTAS TEMPORARIAMENTE DESABILITADAS - DEPENDEM DA TABELA pagamentos_fiado =====
-/*
-// ===== ROTA TEMPORÁRIA PARA MIGRAÇÃO DE PAGAMENTOS =====
-app.post('/api/admin/migrate-payments', async (req, res) => {
-    try {
-        console.log('🔄 Iniciando migração de pagamentos via API...');
-
-        // 1. Criar tabela de pagamentos se não existir
-        await db.query(`
-            CREATE TABLE IF NOT EXISTS pagamentos_fiado (
-                id SERIAL PRIMARY KEY,
-                venda_id INTEGER REFERENCES vendas(id),
-                cliente_id INTEGER REFERENCES clientes(id),
-                valor_pagamento DECIMAL(10,2) NOT NULL,
-                data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                observacao TEXT
-            )
-        `);
-
-        // 2. Verificar pagamentos já migrados
-        const existingPayments = await db.query('SELECT COUNT(*) FROM pagamentos_fiado');
-        const jaExistem = parseInt(existingPayments.rows[0].count);
-
-        // 3. Buscar vendas fiado pagas que ainda não têm pagamento registrado
-        const vendasPagas = await db.query(`
-            SELECT v.id, v.cliente_id, v.total, 
-                   COALESCE(v.data_pagamento, v.data_venda) as data_pagamento
-            FROM vendas v
-            WHERE v.is_fiado = true 
-                AND v.pago = true 
-                AND v.id NOT IN (
-                    SELECT DISTINCT venda_id 
-                    FROM pagamentos_fiado 
-                    WHERE venda_id IS NOT NULL
-                )
-        `);
-
-        // 4. Inserir pagamentos recuperados
-        let pagamentosRecuperados = 0;
-        const pagamentosDetalhes = [];
-
-        for (const venda of vendasPagas.rows) {
-            const { id, cliente_id, total, data_pagamento } = venda;
-            
-            const result = await db.query(`
-                INSERT INTO pagamentos_fiado (venda_id, cliente_id, valor_pagamento, data_pagamento, observacao)
-                VALUES ($1, $2, $3, $4, $5)
-                RETURNING id, valor_pagamento
-            `, [id, cliente_id, total, data_pagamento, 'Migração automática - Pagamento total']);
-
-            pagamentosRecuperados++;
-            pagamentosDetalhes.push({
-                venda_id: id,
-                cliente_id: cliente_id,
-                valor: parseFloat(total),
-                data: data_pagamento
-            });
-
-            console.log(`✅ Pagamento recuperado: Venda ${id} - R$ ${total}`);
-        }
-
-        // 5. Resumo da migração
-        const totalPagamentos = await db.query('SELECT COUNT(*) as count, SUM(valor_pagamento) as total FROM pagamentos_fiado');
-        
-        const relatorio = {
-            success: true,
-            pagamentos_ja_existiam: jaExistem,
-            pagamentos_recuperados: pagamentosRecuperados,
-            total_pagamentos_apos_migracao: parseInt(totalPagamentos.rows[0].count),
-            valor_total_pagamentos: parseFloat(totalPagamentos.rows[0].total || 0),
-            detalhes: pagamentosDetalhes,
-            data_migracao: new Date().toISOString()
-        };
-
-        // 6. Limpar cache
-        cache.delete('dashboard');
-        cache.delete('fiados');
-
-        console.log('✅ Migração concluída via API');
-        res.json(relatorio);
-
-    } catch (error) {
-        console.error('❌ Erro na migração via API:', error);
-        res.status(500).json({ 
-            success: false,
-            error: 'Erro durante a migração',
-            details: error.message 
-        });
-    }
-});
-*/
-
-/*
-// Rota para verificar status da migração
-app.get('/api/admin/migration-status', async (req, res) => {
-    try {
-        // Verificar se a tabela existe
-        const tableExists = await db.query(`
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = 'pagamentos_fiado'
-            );
-        `);
-
-        if (!tableExists.rows[0].exists) {
-            return res.json({
-                migrated: false,
-                message: 'Tabela de pagamentos ainda não foi criada'
-            });
-        }
-
-        // Estatísticas da migração
-        const stats = await db.query(`
-            SELECT 
-                (SELECT COUNT(*) FROM vendas WHERE is_fiado = true AND pago = true) as vendas_pagas,
-                (SELECT COUNT(*) FROM pagamentos_fiado) as pagamentos_registrados,
-                (SELECT COALESCE(SUM(valor_pagamento), 0) FROM pagamentos_fiado) as total_pagamentos,
-                (SELECT COUNT(*) FROM vendas WHERE is_fiado = true AND pago = false) as vendas_em_aberto
-        `);
-
-        const data = stats.rows[0];
-        
-        res.json({
-            migrated: true,
-            vendas_fiado_pagas: parseInt(data.vendas_pagas),
-            pagamentos_registrados: parseInt(data.pagamentos_registrados),
-            total_valor_pagamentos: parseFloat(data.total_pagamentos),
-            vendas_em_aberto: parseInt(data.vendas_em_aberto),
-            status: parseInt(data.vendas_pagas) === parseInt(data.pagamentos_registrados) ? 
-                'Migração completa' : 'Migração parcial ou pendente'
-        });
-
-    } catch (error) {
-        console.error('❌ Erro ao verificar status da migração:', error);
-        res.status(500).json({ 
-            error: 'Erro ao verificar status',
-            details: error.message 
-        });
-    }
-});
-*/
 
 // Iniciar servidor
 app.listen(PORT, async () => {
