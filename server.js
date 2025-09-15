@@ -153,27 +153,33 @@ app.get('/api/dashboard', async (req, res) => {
         const dashboardQuery = `
             WITH vendas_stats AS (
                 SELECT 
-                    -- Vendas hoje
+                    -- Vendas hoje (sempre considerando o valor original da venda)
                     SUM(CASE WHEN DATE(data_venda) = CURRENT_DATE THEN total ELSE 0 END) as vendas_hoje,
-                    -- Vendas do mês
+                    -- Vendas do mês (sempre considerando o valor original da venda)
                     SUM(CASE WHEN EXTRACT(MONTH FROM data_venda) = EXTRACT(MONTH FROM CURRENT_DATE)
                              AND EXTRACT(YEAR FROM data_venda) = EXTRACT(YEAR FROM CURRENT_DATE) 
                              THEN total ELSE 0 END) as vendas_mes,
-                    -- Vendas mês passado
+                    -- Vendas mês passado (sempre considerando o valor original da venda)
                     SUM(CASE WHEN EXTRACT(MONTH FROM data_venda) = EXTRACT(MONTH FROM CURRENT_DATE - INTERVAL '1 month')
                              AND EXTRACT(YEAR FROM data_venda) = EXTRACT(YEAR FROM CURRENT_DATE - INTERVAL '1 month') 
                              THEN total ELSE 0 END) as vendas_mes_passado,
-                    -- Vendas esta semana
+                    -- Vendas esta semana (sempre considerando o valor original da venda)
                     SUM(CASE WHEN data_venda >= DATE_TRUNC('week', CURRENT_DATE) THEN total ELSE 0 END) as vendas_semana,
                     -- Vendas à vista hoje
                     SUM(CASE WHEN DATE(data_venda) = CURRENT_DATE AND is_fiado = false THEN total ELSE 0 END) as vendas_vista_hoje,
-                    -- Fiado hoje
+                    -- Fiado hoje (vendas fiado criadas hoje)
                     SUM(CASE WHEN DATE(data_venda) = CURRENT_DATE AND is_fiado = true THEN total ELSE 0 END) as fiado_hoje,
-                    -- Fiado pago hoje
-                    SUM(CASE WHEN DATE(data_venda) = CURRENT_DATE AND is_fiado = true AND pago = true THEN total ELSE 0 END) as fiado_pago_hoje,
-                    -- Total fiado em aberto
-                    SUM(CASE WHEN is_fiado = true AND pago = false THEN total ELSE 0 END) as total_fiado
+                    -- Total fiado em aberto (valor original das vendas fiado não pagas, menos pagamentos parciais)
+                    SUM(CASE WHEN is_fiado = true AND pago = false THEN total ELSE 0 END) as total_fiado_bruto
                 FROM vendas
+            ),
+            pagamentos_stats AS (
+                SELECT
+                    -- Pagamentos de fiado recebidos hoje
+                    COALESCE(SUM(CASE WHEN DATE(data_pagamento) = CURRENT_DATE THEN valor_pagamento ELSE 0 END), 0) as fiado_pago_hoje,
+                    -- Total de pagamentos parciais realizados (para calcular saldo real)
+                    COALESCE(SUM(valor_pagamento), 0) as total_pagamentos_parciais
+                FROM pagamentos_fiado
             ),
             contadores AS (
                 SELECT 
@@ -182,8 +188,13 @@ app.get('/api/dashboard', async (req, res) => {
                     (SELECT COUNT(*) FROM produtos) as total_produtos,
                     (SELECT COALESCE(SUM(total), 0) FROM consumo WHERE DATE(data_criacao) = CURRENT_DATE) as consumo_hoje
             )
-            SELECT vs.*, c.*
-            FROM vendas_stats vs, contadores c;
+            SELECT 
+                vs.*,
+                ps.*,
+                c.*,
+                -- Calcular saldo real do fiado (valor bruto menos pagamentos parciais)
+                (vs.total_fiado_bruto - ps.total_pagamentos_parciais) as total_fiado
+            FROM vendas_stats vs, pagamentos_stats ps, contadores c;
         `;
 
         const result = await db.query(dashboardQuery);
@@ -749,12 +760,18 @@ app.get('/api/fiados', async (req, res) => {
         }
 
         const result = await db.query(`
-            SELECT c.id, c.nome, COALESCE(SUM(v.total), 0) as total_devido
+            SELECT 
+                c.id, 
+                c.nome, 
+                COALESCE(SUM(v.total), 0) as total_vendas_fiado,
+                COALESCE(SUM(pf.valor_pagamento), 0) as total_pagamentos,
+                (COALESCE(SUM(v.total), 0) - COALESCE(SUM(pf.valor_pagamento), 0)) as total_devido
             FROM clientes c
             INNER JOIN vendas v ON c.id = v.cliente_id 
+            LEFT JOIN pagamentos_fiado pf ON v.id = pf.venda_id
             WHERE v.is_fiado = true AND v.pago = false
             GROUP BY c.id, c.nome
-            HAVING SUM(v.total) > 0
+            HAVING (COALESCE(SUM(v.total), 0) - COALESCE(SUM(pf.valor_pagamento), 0)) > 0
             ORDER BY total_devido DESC
         `);
 
@@ -776,21 +793,31 @@ app.get('/api/fiados/cliente/:id', async (req, res) => {
     try {
         const { id } = req.params;
 
-        // Query otimizada com JOIN
+        // Query otimizada com JOIN incluindo pagamentos parciais
         const result = await db.query(`
             SELECT 
                 v.id, v.data_venda, v.total, v.pago, c.nome as cliente_nome, v.cliente_id,
+                COALESCE(SUM(pf.valor_pagamento), 0) as total_pago,
+                (v.total - COALESCE(SUM(pf.valor_pagamento), 0)) as saldo_devedor,
                 json_agg(
-                    json_build_object(
+                    DISTINCT json_build_object(
                         'quantidade', iv.quantidade,
                         'preco_unitario', iv.preco_unitario,
                         'produto_nome', p.nome
                     )
-                ) as itens
+                ) FILTER (WHERE iv.id IS NOT NULL) as itens,
+                json_agg(
+                    DISTINCT json_build_object(
+                        'id', pf.id,
+                        'valor_pagamento', pf.valor_pagamento,
+                        'data_pagamento', pf.data_pagamento
+                    )
+                ) FILTER (WHERE pf.id IS NOT NULL) as pagamentos
             FROM vendas v
             JOIN clientes c ON v.cliente_id = c.id
             LEFT JOIN itens_venda iv ON v.id = iv.venda_id
             LEFT JOIN produtos p ON iv.produto_id = p.id
+            LEFT JOIN pagamentos_fiado pf ON v.id = pf.venda_id
             WHERE v.cliente_id = $1 AND v.is_fiado = true
             GROUP BY v.id, v.data_venda, v.total, v.pago, c.nome, v.cliente_id
             ORDER BY v.data_venda DESC
@@ -800,14 +827,21 @@ app.get('/api/fiados/cliente/:id', async (req, res) => {
             id: venda.id,
             data_venda: venda.data_venda.toISOString(),
             total: parseFloat(venda.total),
+            total_pago: parseFloat(venda.total_pago || 0),
+            saldo_devedor: parseFloat(venda.saldo_devedor || venda.total),
             pago: venda.pago,
             cliente_nome: venda.cliente_nome,
             cliente_id: venda.cliente_id,
-            itens: venda.itens.map(item => ({
+            itens: venda.itens ? venda.itens.map(item => ({
                 quantidade: item.quantidade,
                 preco_unitario: parseFloat(item.preco_unitario),
                 produto_nome: item.produto_nome
-            }))
+            })) : [],
+            pagamentos: venda.pagamentos ? venda.pagamentos.map(pag => ({
+                id: pag.id,
+                valor_pagamento: parseFloat(pag.valor_pagamento),
+                data_pagamento: pag.data_pagamento
+            })) : []
         }));
 
         res.json(vendasDetalhadas);
@@ -862,9 +896,9 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
             return res.status(400).json({ error: 'Valor de pagamento inválido' });
         }
 
-        // Query com RETURNING para evitar múltiplas queries
+        // Verificar se a venda existe e se é fiado não pago
         const checkResult = await db.query(`
-            SELECT id, total, pago FROM vendas 
+            SELECT id, total, pago, cliente_id FROM vendas 
             WHERE id = $1 AND is_fiado = true
         `, [vendaId]);
 
@@ -876,21 +910,45 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
             return res.status(400).json({ error: 'Venda já está paga' });
         }
 
-        const vendaTotal = parseFloat(checkResult.rows[0].total);
+        const venda = checkResult.rows[0];
+        const vendaTotal = parseFloat(venda.total);
         const valorPagamento = parseFloat(amount);
 
         if (valorPagamento > vendaTotal) {
             return res.status(400).json({ error: 'Valor do pagamento não pode ser maior que o total da venda' });
         }
 
-        let result;
-        if (valorPagamento === vendaTotal) {
-            // Pagamento total
-            result = await db.query(`
+        // Verificar pagamentos já realizados para esta venda
+        const pagamentosResult = await db.query(`
+            SELECT COALESCE(SUM(valor_pagamento), 0) as total_pago 
+            FROM pagamentos_fiado 
+            WHERE venda_id = $1
+        `, [vendaId]);
+
+        const totalJaPago = parseFloat(pagamentosResult.rows[0].total_pago || 0);
+        const saldoDevedor = vendaTotal - totalJaPago;
+
+        if (valorPagamento > saldoDevedor) {
+            return res.status(400).json({ 
+                error: `Valor excede o saldo devedor de R$ ${saldoDevedor.toFixed(2)}` 
+            });
+        }
+
+        // Registrar o pagamento na tabela de pagamentos
+        const pagamentoResult = await db.query(`
+            INSERT INTO pagamentos_fiado (venda_id, cliente_id, valor_pagamento, data_pagamento)
+            VALUES ($1, $2, $3, CURRENT_TIMESTAMP)
+            RETURNING id, valor_pagamento, data_pagamento
+        `, [vendaId, venda.cliente_id, valorPagamento]);
+
+        const novoSaldoDevedor = saldoDevedor - valorPagamento;
+
+        // Se o pagamento quitou totalmente a venda, marcar como paga
+        if (novoSaldoDevedor === 0) {
+            await db.query(`
                 UPDATE vendas 
-                SET pago = true
+                SET pago = true, data_pagamento = CURRENT_TIMESTAMP
                 WHERE id = $1
-                RETURNING id, total
             `, [vendaId]);
 
             // Limpar cache
@@ -899,20 +957,15 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
 
             res.json({
                 success: true,
-                message: 'Pagamento total registrado com sucesso',
-                venda_quitada: result.rows[0],
-                tipo_pagamento: 'total'
+                message: 'Venda quitada totalmente',
+                pagamento: pagamentoResult.rows[0],
+                valor_pago: valorPagamento,
+                total_venda: vendaTotal,
+                saldo_restante: 0,
+                tipo_pagamento: 'quitacao_total'
             });
         } else {
             // Pagamento parcial
-            const novoTotal = vendaTotal - valorPagamento;
-            result = await db.query(`
-                UPDATE vendas 
-                SET total = $1
-                WHERE id = $2
-                RETURNING id, total
-            `, [novoTotal, vendaId]);
-
             // Limpar cache
             cache.delete('fiados');
             cache.delete('dashboard');
@@ -920,9 +973,11 @@ app.post('/api/fiados/pay-partial/:vendaId', async (req, res) => {
             res.json({
                 success: true,
                 message: 'Pagamento parcial registrado com sucesso',
-                venda_atualizada: result.rows[0],
+                pagamento: pagamentoResult.rows[0],
                 valor_pago: valorPagamento,
-                saldo_restante: novoTotal,
+                total_venda: vendaTotal,
+                total_ja_pago: totalJaPago + valorPagamento,
+                saldo_restante: novoSaldoDevedor,
                 tipo_pagamento: 'parcial'
             });
         }
@@ -1825,6 +1880,143 @@ app.use((error, req, res, next) => {
         error: 'Erro interno do servidor',
         message: process.env.NODE_ENV === 'development' ? error.message : 'Erro interno'
     });
+});
+
+// ===== ROTA TEMPORÁRIA PARA MIGRAÇÃO DE PAGAMENTOS =====
+app.post('/api/admin/migrate-payments', async (req, res) => {
+    try {
+        console.log('🔄 Iniciando migração de pagamentos via API...');
+
+        // 1. Criar tabela de pagamentos se não existir
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS pagamentos_fiado (
+                id SERIAL PRIMARY KEY,
+                venda_id INTEGER REFERENCES vendas(id),
+                cliente_id INTEGER REFERENCES clientes(id),
+                valor_pagamento DECIMAL(10,2) NOT NULL,
+                data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                observacao TEXT
+            )
+        `);
+
+        // 2. Verificar pagamentos já migrados
+        const existingPayments = await db.query('SELECT COUNT(*) FROM pagamentos_fiado');
+        const jaExistem = parseInt(existingPayments.rows[0].count);
+
+        // 3. Buscar vendas fiado pagas que ainda não têm pagamento registrado
+        const vendasPagas = await db.query(`
+            SELECT v.id, v.cliente_id, v.total, 
+                   COALESCE(v.data_pagamento, v.data_venda) as data_pagamento
+            FROM vendas v
+            WHERE v.is_fiado = true 
+                AND v.pago = true 
+                AND v.id NOT IN (
+                    SELECT DISTINCT venda_id 
+                    FROM pagamentos_fiado 
+                    WHERE venda_id IS NOT NULL
+                )
+        `);
+
+        // 4. Inserir pagamentos recuperados
+        let pagamentosRecuperados = 0;
+        const pagamentosDetalhes = [];
+
+        for (const venda of vendasPagas.rows) {
+            const { id, cliente_id, total, data_pagamento } = venda;
+            
+            const result = await db.query(`
+                INSERT INTO pagamentos_fiado (venda_id, cliente_id, valor_pagamento, data_pagamento, observacao)
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING id, valor_pagamento
+            `, [id, cliente_id, total, data_pagamento, 'Migração automática - Pagamento total']);
+
+            pagamentosRecuperados++;
+            pagamentosDetalhes.push({
+                venda_id: id,
+                cliente_id: cliente_id,
+                valor: parseFloat(total),
+                data: data_pagamento
+            });
+
+            console.log(`✅ Pagamento recuperado: Venda ${id} - R$ ${total}`);
+        }
+
+        // 5. Resumo da migração
+        const totalPagamentos = await db.query('SELECT COUNT(*) as count, SUM(valor_pagamento) as total FROM pagamentos_fiado');
+        
+        const relatorio = {
+            success: true,
+            pagamentos_ja_existiam: jaExistem,
+            pagamentos_recuperados: pagamentosRecuperados,
+            total_pagamentos_apos_migracao: parseInt(totalPagamentos.rows[0].count),
+            valor_total_pagamentos: parseFloat(totalPagamentos.rows[0].total || 0),
+            detalhes: pagamentosDetalhes,
+            data_migracao: new Date().toISOString()
+        };
+
+        // 6. Limpar cache
+        cache.delete('dashboard');
+        cache.delete('fiados');
+
+        console.log('✅ Migração concluída via API');
+        res.json(relatorio);
+
+    } catch (error) {
+        console.error('❌ Erro na migração via API:', error);
+        res.status(500).json({ 
+            success: false,
+            error: 'Erro durante a migração',
+            details: error.message 
+        });
+    }
+});
+
+// Rota para verificar status da migração
+app.get('/api/admin/migration-status', async (req, res) => {
+    try {
+        // Verificar se a tabela existe
+        const tableExists = await db.query(`
+            SELECT EXISTS (
+                SELECT FROM information_schema.tables 
+                WHERE table_name = 'pagamentos_fiado'
+            );
+        `);
+
+        if (!tableExists.rows[0].exists) {
+            return res.json({
+                migrated: false,
+                message: 'Tabela de pagamentos ainda não foi criada'
+            });
+        }
+
+        // Estatísticas da migração
+        const stats = await db.query(`
+            SELECT 
+                (SELECT COUNT(*) FROM vendas WHERE is_fiado = true AND pago = true) as vendas_pagas,
+                (SELECT COUNT(*) FROM pagamentos_fiado) as pagamentos_registrados,
+                (SELECT COALESCE(SUM(valor_pagamento), 0) FROM pagamentos_fiado) as total_pagamentos,
+                (SELECT COUNT(*) FROM vendas WHERE is_fiado = true AND pago = false) as vendas_em_aberto
+        `);
+
+        const data = stats.rows[0];
+        
+        res.json({
+            migrated: true,
+            vendas_fiado_pagas: parseInt(data.vendas_pagas),
+            pagamentos_registrados: parseInt(data.pagamentos_registrados),
+            total_valor_pagamentos: parseFloat(data.total_pagamentos),
+            vendas_em_aberto: parseInt(data.vendas_em_aberto),
+            status: parseInt(data.vendas_pagas) === parseInt(data.pagamentos_registrados) ? 
+                'Migração completa' : 'Migração parcial ou pendente'
+        });
+
+    } catch (error) {
+        console.error('❌ Erro ao verificar status da migração:', error);
+        res.status(500).json({ 
+            error: 'Erro ao verificar status',
+            details: error.message 
+        });
+    }
 });
 
 // Iniciar servidor

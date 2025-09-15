@@ -81,6 +81,19 @@ async function setupDatabase() {
         `);
         console.log('✅ Tabela consumo OK');
 
+        // Criar tabela pagamentos_fiado
+        await db.query(`
+            CREATE TABLE IF NOT EXISTS pagamentos_fiado (
+                id SERIAL PRIMARY KEY,
+                venda_id INTEGER REFERENCES vendas(id),
+                cliente_id INTEGER REFERENCES clientes(id),
+                valor_pagamento DECIMAL(10,2) NOT NULL,
+                data_pagamento TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                observacao TEXT
+            )
+        `);
+        console.log('✅ Tabela pagamentos_fiado OK');
+
         // Verificar dados existentes
         const produtosCount = await db.query('SELECT COUNT(*) FROM produtos');
         const clientesCount = await db.query('SELECT COUNT(*) FROM clientes');
